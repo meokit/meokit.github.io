@@ -1,7 +1,7 @@
 ---
 author: MeoKit
 pubDatetime: 2026-04-25T14:00:00Z
-title: "Podish 技术报告：一个比 iSH 更快的 iOS Linux x86 容器"
+title: "一个比 iSH 更快的 iOS Linux x86 容器"
 slug: podish-technique-report-zh
 featured: true
 draft: false
