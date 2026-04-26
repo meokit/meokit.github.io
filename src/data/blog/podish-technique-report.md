@@ -204,8 +204,8 @@ The result: roughly 10× faster than QEMU TCI. (A big shoutout to Justine Tunney
 | `next_eip` | `uint32_t` | 8 | 4 | PC of the next instruction |
 | `len` | `uint8_t` | 12 | 1 | Instruction byte length |
 | `modrm` | `uint8_t` | 13 | 1 | ModRM byte |
-| `prefixes` | `Prefixes` (union) | 14 | 1 | Prefix info (lock/rep/segment…) |
-| `meta` | `Meta` (union) | 15 | 1 | Meta info (has_mem / has_imm / ext_kind…) |
+| `prefixes` | `Prefixes` (union with bitfields) | 14 | 1 | Prefix info (lock/rep/segment…) |
+| `meta` | `Meta` (union with bitfields) | 15 | 1 | Meta info (has_mem / has_imm / ext_kind…) |
 | `ext.data` | `DecodedMemData` | 16 | 16 | Memory operand description (imm / ea_desc / disp) |
 | `ext.link.next_block` | `BasicBlock*` | 24 | 8 | Cached successor block pointer after block linking |
 | `ext.control` | `DecodedControlFlowData` | 16 | 16 | Control-flow target (target_eip / cached_target) |
@@ -348,9 +348,9 @@ In this interpreter, `BasicBlock` is an object with a fixed-size header followed
 
 | Field | Type | Offset | Size | Description |
 | :--- | :--- | ---: | ---: | :--- |
-| `chain.start_eip` | `uint32_t` | 0 | 4 (embedded in `BasicBlockChainPrefix`) | Block start guest PC |
-| `chain.inst_count` | `uint8_t` | 4 | 1 | Number of instructions in the block |
-| `chain.valid` | `uint1_t` | 5 | 1 bit | Whether the block is valid (for invalidation marking) |
+| `chain.start_eip` | `uint64_t` (bitfield: 32 bits) | 0 | 4 (embedded in `BasicBlockChainPrefix`) | Block start guest PC |
+| `chain.inst_count` | `uint64_t` (bitfield: 8 bits) | 4 | 1 | Number of instructions in the block |
+| `chain.valid` | `uint64_t` (bitfield: 1 bit) | 5 | 1 bit | Whether the block is valid (for invalidation marking) |
 | `entry` | `HandlerFunc*` | 8 | 8 | Semantic entry point of the first instruction; the interpreter jumps here directly |
 | `end_eip` | `uint32_t` | 16 | 4 | Block end address (next_eip of the last instruction) |
 | `slot_count` | `uint32_t` | 20 | 4 | Total slot count (including trailing sentinel) |
