@@ -135,7 +135,7 @@ flowchart TB
     H --> I
     I --> J
     J --> K
-%%
+%%endmermaid
 ```
 
 The repository is roughly organized into these layers:
@@ -185,7 +185,7 @@ flowchart LR
     C -->|musttail call| D
     D -->|musttail call| E
     E -->|Block end| Ret
-%%
+%%endmermaid
 ```
 
 Specifically:
@@ -242,7 +242,7 @@ flowchart TB
     F["jcc / cmov / setcc"] --> G{"Cond depends on PF?"}
     G -->|No| H["Read flags_cache[31:0] directly"]
     G -->|Yes| I["EvaluatePF: compute parity from flags_cache[47:40]"]
-%%
+%%endmermaid
 ```
 
 During execution, `flags_cache` is a `uint64_t` passed through the tail-call chain:
@@ -282,7 +282,7 @@ flowchart LR
     E["Refill MicroTLB"]
     F["Page Table Walk"]
     G["Permission Check"]
-%%
+%%endmermaid
 ```
 
 `SoftTLB` is a three-way direct-mapped TLB consisting of three fixed-size tables:
@@ -389,7 +389,7 @@ flowchart LR
     D["Superopcode"] -->|"fused"| E["pop ebx ; pop esi"]
     D -->|"fused"| F["test eax, eax ; je"]
     D -->|"fused"| G["mov eax, [esp] ; sub reg, eax"]
-%%
+%%endmermaid
 ```
 
 **Block Linking**: If a basic block is short enough, its instructions don't cross page boundaries, and its control flow is simple, the successor block is stitched directly to the end of the current block. This reduces some indirect memory access during inter-block jumps.
@@ -441,7 +441,7 @@ flowchart TB
     G -->|Yes| H["invalidate_code_cache_page"]
     H --> I["Mark blocks invalid"]
     G -->|No| J["Fast write path"]
-%%
+%%endmermaid
 ```
 
 When a host memory page is mapped as both **Executable** and **Writable**, the MMU internally marks it as an `External Alias`. If `BasicBlocks` have already been pre-decoded and cached on this page, the MMU tags the write permission for this page with a `ForceWriteSlow` flag. Any subsequent write to this page will miss the fast TLB, hit `ForceWriteSlow`, and be forced into a slow path. The slow path calls `invalidate_code_cache_page(addr)`, invalidating all `BasicBlocks` associated with that page.
@@ -553,7 +553,7 @@ flowchart TB
     A1 --> M
     B1 --> M
     M --> R
-%%
+%%endmermaid
 ```
 
 I implemented `clone`/`fork`/`vfork` and basic `pthread` semantics, but **the concurrency model is not OS-level multi-threaded parallelism**:

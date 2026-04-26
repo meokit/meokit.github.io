@@ -135,7 +135,7 @@ flowchart TB
     H --> I
     I --> J
     J --> K
-%%
+%%endmermaid
  ```
 
 仓库里大致有几层：
@@ -185,7 +185,7 @@ flowchart LR
     C -->|"musttail call"| D
     D -->|"musttail call"| E
     E -->|"Block end"| Ret
-%%
+%%endmermaid
 ```
 
 具体做法：
@@ -242,7 +242,7 @@ flowchart TB
     F["jcc / cmov / setcc"] --> G{"Cond depends on PF?"}
     G -->|No| H["Read flags_cache[31:0] directly"]
     G -->|Yes| I["EvaluatePF: compute parity from flags_cache[47:40]"]
-%%
+%%endmermaid
 ```
 
 解释器执行期间传递的 `flags_cache` 是一个 `uint64_t`：
@@ -288,7 +288,7 @@ flowchart LR
     nodeF --> nodeG
     nodeG --> nodeE
     nodeE --> nodeC
-%%
+%%endmermaid
 ```
 
 `SoftTLB` 是一个三路 direct-mapped TLB，三张固定大小的表：
@@ -402,7 +402,7 @@ flowchart LR
     D["Superopcode"] -->|"fused"| E["pop ebx ; pop esi"]
     D -->|"fused"| F["test eax, eax ; je"]
     D -->|"fused"| G["mov eax, [esp] ; sub reg, eax"]
-%%
+%%endmermaid
 ```
 
 **Block Linking**：如果一个基本块足够短、指令不跨页，而且控制流关系简单，就将后继块直接接到当前块尾部，减少块间跳转时的间接访存。
@@ -446,7 +446,7 @@ flowchart TB
     G -->|Yes| H["invalidate_code_cache_page"]
     H --> I["Mark blocks invalid"]
     G -->|No| J["Fast write path"]
-%%
+%%endmermaid
 ```
 
 当某个 host page 同时被映射为**可执行**和**可写**时，MMU 会把它标记为 `External Alias`。如果该页上已缓存了 `BasicBlock`，MMU 会给对应 guest page 表项打上 `ForceWriteSlow`。后续任何对该页的写操作，在 TLB refill 时会命中 `ForceWriteSlow`，走慢路径调用 `invalidate_code_cache_page`，将该页关联的所有 `BasicBlock` 标记为失效。
@@ -552,7 +552,7 @@ flowchart TB
     A1 --> M
     B1 --> M
     M --> R
-%%
+%%endmermaid
  ```
 
 我实现了 `clone`/`fork`/`vfork` 和基本的 `pthread` 语义，但并发模型**并非操作系统意义上的多线程并行**：
