@@ -135,6 +135,7 @@ flowchart TB
     H --> I
     I --> J
     J --> K
+%%
 ```
 
 The repository is roughly organized into these layers:
@@ -173,11 +174,18 @@ Traditional interpreters usually have a central dispatch loop (`while (1) { deco
 
 ```mermaid
 flowchart LR
-    A["x86 Binary"] -->|"Predecode"| B["BasicBlock"]
-    B -->|"Entry"| C["Handler: mov"]
-    C -->|"musttail call"| D["Handler: add"]
-    D -->|"musttail call"| E["Handler: jmp"]
-    E -->|"Block end"| F["Return to X86_Run"]
+    A["x86 Binary"]
+    B["BasicBlock"]
+    C["Handler: mov"]
+    D["Handler: add"]
+    E["Handler: jmp"]
+    Ret["Return to X86_Run"]
+    A -->|Predecode| B
+    B -->|Entry| C
+    C -->|musttail call| D
+    D -->|musttail call| E
+    E -->|Block end| Ret
+%%
 ```
 
 Specifically:
@@ -234,6 +242,7 @@ flowchart TB
     F["jcc / cmov / setcc"] --> G{"Cond depends on PF?"}
     G -->|No| H["Read flags_cache[31:0] directly"]
     G -->|Yes| I["EvaluatePF: compute parity from flags_cache[47:40]"]
+%%
 ```
 
 During execution, `flags_cache` is a `uint64_t` passed through the tail-call chain:
@@ -262,13 +271,18 @@ I spent so much time analyzing dispatch overhead, only to realize during profili
 ```mermaid
 flowchart LR
     A["Guest Address"] --> B{"MicroTLB Hit?"}
-    B -->|Yes| C["host_ptr = guest_addr + addend"]
+    B -->|Yes| C
     B -->|No| D{"SoftTLB Hit?"}
-    D -->|Yes| E["Refill MicroTLB"]
-    D -->|No| F["Page Table Walk"]
-    F --> G["Permission Check"]
+    D -->|Yes| E
+    D -->|No| F
+    F --> G
     G --> E
     E --> C
+    C["host_ptr = guest_addr + addend"]
+    E["Refill MicroTLB"]
+    F["Page Table Walk"]
+    G["Permission Check"]
+%%
 ```
 
 `SoftTLB` is a three-way direct-mapped TLB consisting of three fixed-size tables:
@@ -375,6 +389,7 @@ flowchart LR
     D["Superopcode"] -->|"fused"| E["pop ebx ; pop esi"]
     D -->|"fused"| F["test eax, eax ; je"]
     D -->|"fused"| G["mov eax, [esp] ; sub reg, eax"]
+%%
 ```
 
 **Block Linking**: If a basic block is short enough, its instructions don't cross page boundaries, and its control flow is simple, the successor block is stitched directly to the end of the current block. This reduces some indirect memory access during inter-block jumps.
@@ -417,15 +432,16 @@ My approach is not "monitor every write operation globally," but rather **reuse 
 
 ```mermaid
 flowchart TB
-    A["mmap/mprotect<br/>PROT_EXEC | PROT_WRITE"] --> B["Register External Alias"]
-    B --> C{"Live BasicBlock<br/>on this page?"}
-    C -->|Yes| D["Set ForceWriteSlow<br/>on guest page entries"]
+    A["mmap/mprotect\nPROT_EXEC | PROT_WRITE"] --> B["Register External Alias"]
+    B --> C{"Live BasicBlock\non this page?"}
+    C -->|Yes| D["Set ForceWriteSlow\non guest page entries"]
     C -->|No| E["Normal page"]
 
     F["Guest Write Instruction"] --> G{"ForceWriteSlow?"}
     G -->|Yes| H["invalidate_code_cache_page"]
     H --> I["Mark blocks invalid"]
     G -->|No| J["Fast write path"]
+%%
 ```
 
 When a host memory page is mapped as both **Executable** and **Writable**, the MMU internally marks it as an `External Alias`. If `BasicBlocks` have already been pre-decoded and cached on this page, the MMU tags the write permission for this page with a `ForceWriteSlow` flag. Any subsequent write to this page will miss the fast TLB, hit `ForceWriteSlow`, and be forced into a slow path. The slow path calls `invalidate_code_cache_page(addr)`, invalidating all `BasicBlocks` associated with that page.
@@ -537,6 +553,7 @@ flowchart TB
     A1 --> M
     B1 --> M
     M --> R
+%%
 ```
 
 I implemented `clone`/`fork`/`vfork` and basic `pthread` semantics, but **the concurrency model is not OS-level multi-threaded parallelism**:
