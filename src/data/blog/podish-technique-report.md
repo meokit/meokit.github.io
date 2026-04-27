@@ -28,7 +28,7 @@ description: "A deep dive into Building Podish, a high-performance Linux x86 con
 
 ## Project Overview
 
-Podish's goal is simple: run x86 Linux programs as efficiently as possible on **JIT-restricted iOS**. It is not a full-system emulator (like UTM), but a user-space container — similar to iSH, but written completely from scratch, and roughly twice as fast across multiple dimensions.
+Podish's goal: run x86 Linux programs as efficiently as possible on **JIT-restricted iOS**. Similar to iSH, but written completely from scratch, and roughly twice as fast across multiple dimensions.
 
 ### What It Can Run
 
@@ -77,19 +77,19 @@ _Full benchmarks and testing environment details are at the end in "[Performance
 
 ---
 
-> **The following sections dive into technical implementation details.** If you only want to know the project's current state, the overview above is sufficient. If you want to see how the interpreter gets this fast, keep reading.
+> **The following sections dive into technical implementation details.** If you only want to know the project's current state, the overview above is sufficient. The rest is dry technical detail.
 
 ---
 
 ## Motivation & Background
 
-iOS has a famous restriction: no JIT compilation. Specifically, the system prohibits WX (Write-XOR-Execute) memory page mappings; unsigned code cannot execute. This means you cannot download a JIT-accelerated UTM from the App Store — only the painfully slow UTM SE. You also cannot run LuaJIT in JIT mode.
+iOS has a restriction: no JIT compilation. Specifically, the system prohibits WX (Write-XOR-Execute) memory page mappings; unsigned code cannot execute. This means you cannot download a JIT-accelerated UTM from the App Store — only the painfully slow UTM SE. You also cannot run LuaJIT in JIT mode.
 
-My question: **Just how fast can an interpreter get?** Can a carefully designed, hardware-aware interpreter rival JIT performance without using JIT at all?
+Against this background, I wanted to know: **Just how fast can an interpreter get?** Can a carefully designed, hardware-aware interpreter rival JIT performance without using JIT at all?
 
-The main inspiration for the interpreter was [LuaJIT Remake](https://github.com/luajit-remake/luajit-remake). Through it, I learned about Clang's `preserve_none`, `preserve_all`, and `[[musttail]]` ABI features — tools that might let the compiler generate interpreter hot paths comparable to hand-written assembly.
+The main inspiration for the interpreter was [LuaJIT Remake](https://github.com/luajit-remake/luajit-remake). Through it, I learned about Clang's `preserve_none`, `preserve_all`, and `[[musttail]]` ABI features — tools that could let the compiler generate interpreter hot paths comparable to hand-written assembly.
 
-The project started with `hello world` (week one), got `CoreMark` running (about a month later), and now stably runs Busybox, Bash, Python, LuaJIT, GCC, and even boots Node.js and Gemini CLI.
+The project started with `hello world` (week one), got `CoreMark` running (about a month later), and now stably runs Busybox, Bash, Python, LuaJIT, GCC, and even starts Node.js and Gemini CLI.
 
 ---
 
@@ -138,7 +138,7 @@ flowchart TB
 %%endmermaid
 ```
 
-The repository is roughly organized into these layers:
+The repository has these layers:
 
 - `libfibercpu`: IA-32 emulator core written in C++
 - `Fiberish.Core`: Linux runtime / kernel compatibility layer
@@ -147,30 +147,28 @@ The repository is roughly organized into these layers:
 - `Podish.Cli`: CLI for actual usage
 - SwiftUI / Browser interfaces
 
-### Why C++ for the core and C# for the runtime?
+### Why I wrote the syscall layer in C#
 
-This is a deliberate engineering trade-off.
+**Why C#?** I needed to rapidly implement the semantics for about 200 Linux syscalls, a VFS layer, a network stack, and container lifecycle management. C#'s cross-platform I/O, string handling, async model, and rich standard library let me get a shell running in a month. If I had used pure C++, I'd have had to directly interface with a lot of different system APIs.
 
-**Why C#?** Early on, I needed to rapidly implement the semantics for about 200 Linux syscalls, a VFS layer, a network stack, and container lifecycle management. C#'s cross-platform I/O, string handling, async model, and rich standard library allowed me to push from "hello world" to a running `CoreMark` in just a month. If I had used pure C++, I'd probably still be writing wrappers for `std::filesystem`.
+**Controlling cross-language overhead:** To prevent P/Invoke from becoming a bottleneck and to simplify lifecycle management, I designed it like this:
 
-**Controlling boundary overhead:** To prevent P/Invoke from becoming a bottleneck, I made a few key design choices:
-
-- **Minimal C API**: `libfibercpu` exposes a strictly C-style API (`X86_Create`, `X86_Run`, `X86_RegRead`, etc.), which C# calls via `LibraryImport` / `DllImport`. The `EmuState` is just an `IntPtr` on the C# side, creating zero GC pressure.
-- **Zero-copy memory access**: The C# layer never reads/writes guest memory byte-by-byte through P/Invoke. Instead, `bindings.h` provides `X86_ResolvePtrForRead/Write` returning a raw host pointer, which C# maps using `Span<byte>` or `MemoryMarshal` to manipulate directly.
-- **Anchoring Callbacks**: Callbacks into C# (Fault, Interrupt, Log) need to hold a reference to the C# `Engine` object. I pin the object on the heap using `GCHandle.Alloc(this)` and pass the pointer to C++ as `userdata`, completely avoiding GC relocation issues across the boundary.
-- **Batching Syscalls**: In the hot path, the guest program usually executes hundreds or thousands of instructions in C++ before triggering a single syscall. The actual frequency of boundary crossings depends on the guest's syscall density, not its instruction density.
+- **Use a C API**: `libfibercpu` exposes a strictly C-style API (`X86_Create`, `X86_Run`, `X86_RegRead`, etc.), which C# calls via `LibraryImport` / `DllImport`. The `EmuState` is just an `IntPtr` on the C# side, creating zero GC pressure.
+- **Zero-copy memory access**: The C# layer never reads/writes guest memory byte-by-byte through P/Invoke. `bindings.h` provides interfaces that return raw host pointers, which C# maps using `Span<byte>` or `MemoryMarshal` to manipulate directly.
+- **Pin callbacks with GCHandle**: Callbacks into C# (Fault, Interrupt, Log) need to hold a reference to the C# `Engine` object. I pin the object on the heap using `GCHandle.Alloc(this)` and pass the pointer to C++ as `userdata`, completely avoiding GC relocation issues across the boundary.
+- **Only syscalls enter C#**: In the hot path, the guest program usually executes hundreds or thousands of instructions in C++ before triggering a single syscall. The actual frequency of boundary crossings depends on the guest's syscall density, not its instruction density.
 
 Profiling shows that in compute-heavy workloads (like CoreMark), language boundary overhead accounts for less than 1%. In I/O-heavy workloads (like `git clone`), the bottlenecks are the network and VFS, not P/Invoke.
 
 ---
 
-## Interpreter Core: Four Key Design Decisions
+## Interpreter Design
 
-The core goal of the interpreter is: **push the overhead of x86 emulation as low as possible without using JIT.** Here are the four most critical design decisions.
+The core goal of the interpreter is: **push the overhead of x86 emulation as low as possible without using JIT.** Here are a few key design choices.
 
 ### 1. Pre-decoding + Tail-call Dispatch
 
-Traditional interpreters usually have a central dispatch loop (`while (1) { decode; dispatch; execute; }`), returning to the loop after every instruction. My approach shifts dispatch forward:
+Traditional interpreters usually have a central dispatch loop (`while (1) { decode; dispatch; execute; }`), returning to the loop after every instruction. I chose to simplify dispatch as much as possible, chaining instructions with tail calls:
 
 ```mermaid
 flowchart LR
@@ -194,7 +192,7 @@ Specifically:
 2. **Tail-call chain**: Each IR carries its own handler function pointer. After executing the current instruction, instead of returning to a central dispatcher, it directly tail-calls into the next instruction's handler via `[[musttail]]`.
 3. **Caching**: Decoded results are cached in `BasicBlock`, avoiding repeated decode.
 
-The result: roughly 10× faster than QEMU TCI. (A big shoutout to Justine Tunney's [blink](https://github.com/jart/blink) project, which introduced me to Intel's [XED](https://github.com/intelxed/xed) and helped me build the table-driven decoder).
+A big shoutout to Justine Tunney's [blink](https://github.com/jart/blink) project, which introduced me to Intel's [XED](https://github.com/intelxed/xed) and helped me build the table-driven decoder.
 
 `DecodedOp` is fixed at **32 bytes**, aligned to a 16-byte boundary:
 
@@ -226,11 +224,11 @@ Predecoded IR:
 
 ### 2. Parity-Only Lazy Flags
 
-Implementing x86 `EFLAGS` accurately is tedious. QEMU uses a very elegant [lazy evaluation system](https://qemu.weilnetz.de/w64/2012/2012-12-04/qemu-tech.html) where they store `CC_SRC`, `CC_DST`, and `CC_OP`, only calculating the flags when explicitly requested.
+x86 `EFLAGS` is tricky to handle. QEMU uses a very elegant [lazy evaluation system](https://qemu.weilnetz.de/w64/2012/2012-12-04/qemu-tech.html) where they store `CC_SRC`, `CC_DST`, and `CC_OP`, only calculating the flags when explicitly requested.
 
-I tried implementing this, and it was _slower_ than calculating them eagerly. Why? Because writing those three variables to memory and reading them back was killing me — I was already memory-bound.
+I tried it and found it was slower in my case — because writing those three variables to memory and reading them back was killing me. I was already memory-bound.
 
-My compromise: **I only evaluate the Parity Flag (PF) lazily.**
+I ended up choosing to **only evaluate the Parity Flag (PF) lazily.**
 
 ```mermaid
 flowchart TB
@@ -250,9 +248,11 @@ During execution, `flags_cache` is a `uint64_t` passed through the tail-call cha
 - Lower 32 bits: real-time architectural EFLAGS (CF/ZF/SF/OF/AF/DF maintained in real time)
 - Upper bits (bits 40-47): PF lazy state (stores the source byte, not the PF bit itself)
 
-Why only lazy PF? CF/ZF/SF/OF are written by almost every ALU instruction and read by almost every `jcc`/`cmov`/`setcc`. Doing them lazily adds memory overhead that isn't worth it. But PF is expensive to calculate (requires iterating bits) and rarely used (only by `JP`/`JNP`, cond 10/11), so it's worth lazying.
+CF/ZF/SF/OF are written by almost every ALU instruction and read by almost every `jcc`/`cmov`/`setcc`. Doing them lazily adds memory overhead that isn't worth it. But PF is more expensive than ordinary flags, and it is rarely used (only by `JP`/`JNP`, cond 10/11), so it's worth lazying.
 
-**Static layer:** Within a basic block, I do def-use analysis on flags. If an instruction writes flags but no one reads them later, it is replaced directly with a no-flags handler variant. This variant is expressed through template parameters like `AluAdd<T, false>` and `AluSub<T, false>`; the compiler completely elides the entire flags-update path.
+I also tried several ways to compute PF — ARM Neon built-in instructions, direct bit operations, and table lookup. Table lookup was fastest, but still has memory access latency. Neon built-in instructions may involve data movement across SIMD registers, so they were not faster than table lookup.
+
+**Static layer:** Within a basic block, I do def-use analysis on flags. If an instruction writes flags but no one reads them later, it is replaced directly with a no-flags handler variant. This variant is expressed through template parameters like `AluAdd<T, false>` and `AluSub<T, false>`; the compiler completely removes the entire flags-update path.
 
 **Dynamic layer:** During execution of each instruction, `flags_cache` is passed as a register argument through the tail-call chain and is never written back to memory. Only `PF` is lazy:
 
@@ -260,13 +260,13 @@ Why only lazy PF? CF/ZF/SF/OF are written by almost every ALU instruction and re
 - When reading PF, `EvaluatePF(flags_cache)` retrieves the source byte from the high bits and calculates parity on the spot;
 - At externally visible points (`pushf`, `lahf`, faults, interrupts, API boundaries), `GetArchitecturalEflags()` materializes the lazy parity and returns the full 32-bit EFLAGS.
 
-**Commit semantics:** `CommitFlagsCache` is only called once at handler chain exit boundaries (`ExitOnCurrentEIP`, `ExitOnNextEIP`, restart/retry, resolver miss), writing the register-held `flags_cache` back to `state->ctx.flags_state`. During successful chaining it is never committed — because the next instruction's handler will continue passing the same `flags_cache` as a register argument. `X86_Run()` and `X86_Step()` also do not commit after the handler returns, to avoid overwriting updated state with a stale caller-side copy.
+**Commit:** `CommitFlagsCache` is only called once at handler chain exit boundaries (`ExitOnCurrentEIP`, `ExitOnNextEIP`, restart/retry, resolver miss), writing the register-held `flags_cache` back to `state->ctx.flags_state`. During successful chaining it is never committed — because the next instruction's handler will continue passing the same `flags_cache` as a register argument. `X86_Run()` and `X86_Step()` also do not commit after the handler returns, to avoid overwriting updated state with a stale caller-side copy.
 
-An interesting detail is the `CheckCondition` LUT path: the vast majority of conditional jumps (cond 0-9, 12-15) do not depend on PF, so they read the low 32 bits via `GetFlags32Raw(flags_cache)` and use a LUT lookup to decide the branch direction; only cond 10/11 (JP/JNP) branch separately to `EvaluatePF()`. This design makes the extra cost of PF laziness nearly zero.
+For the `CheckCondition` LUT path: the vast majority of conditional jumps (cond 0-9, 12-15) do not depend on PF, so they read the low 32 bits via `GetFlags32Raw(flags_cache)` and use a LUT lookup to decide the branch direction; only cond 10/11 (JP/JNP) branch separately to `EvaluatePF()`. This design makes the extra cost of PF laziness nearly zero.
 
 ### 3. Memory Access is the Real Bottleneck: MicroTLB and SoftTLB
 
-I spent so much time analyzing dispatch overhead, only to realize during profiling that my biggest issue was shockingly basic: address translation.
+The idea started with LuaJIT Remake. My first profile showed that address translation is a unique problem for CPU emulators.
 
 ```mermaid
 flowchart LR
@@ -287,11 +287,11 @@ flowchart LR
 
 `SoftTLB` is a three-way direct-mapped TLB consisting of three fixed-size tables:
 
-| Field       | Type                        | Offset | Size | Description                           |
-| :---------- | :-------------------------- | -----: | ---: | :------------------------------------ |
-| `read_tlb`  | `std::array<TlbEntry, 256>` |      0 | 4096 | Fast read-permission mapping table    |
-| `write_tlb` | `std::array<TlbEntry, 256>` |   4096 | 4096 | Fast write-permission mapping table   |
-| `exec_tlb`  | `std::array<TlbEntry, 256>` |   8192 | 4096 | Fast execute-permission mapping table |
+| Field       | Type                        | Offset | Size | Description                    |
+| :---------- | :-------------------------- | -----: | ---: | :----------------------------- |
+| `read_tlb`  | `std::array<TlbEntry, 256>` |      0 | 4096 | Read-permission mapping table  |
+| `write_tlb` | `std::array<TlbEntry, 256>` |   4096 | 4096 | Write-permission mapping table |
+| `exec_tlb`  | `std::array<TlbEntry, 256>` |   8192 | 4096 | Execute-permission mapping table |
 
 `TlbEntry` is aligned to 16 bytes, fixed at **16 bytes**:
 
@@ -301,7 +301,7 @@ flowchart LR
 | `perm`   | `Property` (enum) |      4 |    4 | Permission bits (Read / Write / Exec / Dirty …) |
 | `addend` | `std::uintptr_t`  |      8 |    8 | `host_ptr = guest_addr + addend`                |
 
-Indexing is also very direct:
+Index directly with these bit operations:
 
 ```text
 idx = (guest_addr >> PAGE_SHIFT) & 255
@@ -309,11 +309,11 @@ tag = guest_addr & ~PAGE_MASK
 host_ptr = guest_addr + addend
 ```
 
-In other words, `SoftTLB`'s job is to compress already-looked-up guest page mappings into a fast `tag + addend` entry. On a hit, you just check the tag and do one addition to get the host address; on a miss, you fall back to the slow path to check permissions, fill the entry, and handle exceptions.
+`SoftTLB`'s job is to compress already-looked-up guest page mappings into a fast `tag + addend` entry. On a hit, you just check the tag and do one addition to get the host address; on a miss, you fall back to the slow path to check permissions, fill the entry, and handle exceptions.
 
-It turned out to be a very silly TLB refill bug. Fixing it immediately bumped my CoreMark from 600 to 800. It made me realize: **Address translation is the true bottleneck.**
+Early on there was a very silly TLB refill bug that hurt performance; CoreMark was only ~400. I looked at dispatch for a while and found nothing. After fixing the TLB bug it jumped to ~800. This made me realize address translation matters too.
 
-I introduced a `MicroTLB` — a tiny 16-byte structure kept permanently in a host register during the execution chain. If it hits, it's just a quick tag match and an addition (`host_ptr = guest_addr + addend`).
+I added a `MicroTLB` — a 16-byte structure kept in a host register during the execution chain. If it hits, it's just a quick tag match and an addition (`host_ptr = guest_addr + addend`).
 
 `MicroTLB` is a resident register structure, aligned to 16 bytes, fixed at **16 bytes**:
 
@@ -323,7 +323,7 @@ I introduced a `MicroTLB` — a tiny 16-byte structure kept permanently in a hos
 | `tag_w`  | `uint32_t`       |      4 |    4 | Write-permission tag, default `0xFFFFFFFF` (miss state) |
 | `addend` | `std::uintptr_t` |      8 |    8 | `host_ptr = guest_addr + addend`                        |
 
-Note the data layout: `read_tag` + `write_tag` are merged into the same register, so this structure occupies two host registers.
+`read_tag` + `write_tag` fit in the same register, so this structure occupies two host registers.
 
 Its hit/miss path can be represented as:
 
@@ -363,7 +363,7 @@ In this interpreter, `BasicBlock` is an object with a fixed-size header followed
 | `exec_count`          | `uint64_t`                     |     40 |                                       8 | Number of times the block has been executed (for profile-guided superopcode)       |
 | `slots[]`             | `DecodedOp[]`                  |     48 |                Variable (32 bytes each) | Pre-decoded instruction stream                                                     |
 
-A few fields are especially critical:
+A few especially critical fields:
 
 - `entry` points to the first executable semantic entry of this block; once the interpreter has the block, it can start running from here directly.
 - `slots[]` is a sequentially ordered `DecodedOp` array, each `DecodedOp` fixed at `32` bytes.
@@ -392,26 +392,18 @@ flowchart LR
 %%endmermaid
 ```
 
-**Block Linking**: If a basic block is short enough, its instructions don't cross page boundaries, and its control flow is simple, the successor block is stitched directly to the end of the current block. This reduces some indirect memory access during inter-block jumps.
+**Block Linking**: If a basic block is short enough, its instructions don't cross page boundaries, and its control flow is simple, the successor block's instructions are directly appended to the end of the current block. This reduces some indirect memory access during inter-block jumps.
 
-**Superopcode**: At first I tried simple bigram statistics, but the results were mediocre. The reason is obvious: high-frequency bigrams aren't necessarily frequently executed — they just have high frequency among all pairs, and the total number of fixed instruction pairs isn't large to begin with. Additionally, because we do instruction specialization, the specialized instructions become extremely sparse, making even fewer pairs fixable.
+**Superopcode**: Select seeds around high-frequency anchor instructions, then examine their def-use relationship with neighboring instructions. Only fuse combinations with `RAW` (Read-After-Write) dependencies. This strategy ultimately generated about `256` superopcodes.
 
-The more effective approach is:
-
-- First select seeds around high-frequency anchor instructions
-- Then examine their def-use relationship with neighboring instructions
-- Only fuse combinations with `RAW` (Read-After-Write) dependencies
-
-This strategy ultimately generated about `256` superopcodes, and was one of the key steps in stably pushing performance past `3000+ CoreMark`.
-
-Representative examples in the current generation set include:
+Representative examples:
 
 - Stack-operation chains: `pop ebx ; pop esi`
 - Flags producer/consumer chains: `test eax, eax ; je/jz ...`
 - Load-use chains: `mov eax, [esp+off] ; sub reg, eax`
 - Load-store chains: `mov ebx, [esp+off] ; mov [esi], ebx`
 
-The candidate discovery pipeline is essentially not complicated:
+The candidate discovery pipeline is simple; see the `Podish.PerfTool` project:
 
 ```text
 block trace
@@ -436,9 +428,9 @@ On Browser/Wasm, that direct-mapping path is disabled (the platform doesn't supp
 
 ## SMC (Self-Modifying Code) Handling
 
-SMC (Self-Modifying Code) is standard in modern JIT engines (V8, LuaJIT, .NET JIT): they write machine code to memory and immediately jump to it. The emulator must handle this correctly.
+SMC (Self-Modifying Code) is required by modern JIT engines (V8, LuaJIT, .NET JIT): they write machine code to memory and then jump to it. The emulator must handle this correctly.
 
-We don't need to "monitor every write operation globally," but rather **reuse the SoftMMU's permission system**, pushing detection costs into permission bits:
+For efficiency, **the MMU permission mechanism is reused**, pushing detection costs into permission bits:
 
 ```mermaid
 flowchart TB
@@ -454,56 +446,13 @@ flowchart TB
 %%endmermaid
 ```
 
-When a host memory page becomes both **Executable** and **Writable**, the MMU tracks it as an `External Alias`; once there are live `BasicBlocks` on that page, the corresponding guest-page entries are tagged with `ForceWriteSlow`, so later writes fall out of the fast TLB path, call `invalidate_code_cache_page(addr)`, and invalidate only the affected blocks via `page_to_blocks`. If the current EIP is on the page being modified, `ShouldInterceptExecWriteForSmc` immediately yields into a **single-instruction safe mode** (`max_insts = 1`) so the write and the jump to newly generated code are separated by a hard instruction boundary. Under `clone(CLONE_VM)`, page-table changes are then broadcast to sibling engines through `RuntimeTlbShootdownRing`, because each `Engine` keeps its own `SoftTLB`. This is enough to keep LuaJIT's JIT mode stable and even let Node.js/V8 start up; occasional crashes remain a known limitation, likely due to subtle bugs in instruction coverage or incomplete Linux syscalls.
+When a host memory page is mapped as both **Executable** and **Writable**, the MMU marks it as an `External Alias`. If `BasicBlock`s are already cached on that page, the MMU tags the corresponding guest-page entries with `ForceWriteSlow`. Any subsequent write to that page will hit `ForceWriteSlow` during TLB refill, fall back to the slow path, call `invalidate_code_cache_page`, and mark all associated `BasicBlock`s as invalid.
 
-### SMC Mechanics in Detail
+**Execution-time race:** Merely invalidating the block cache when writing is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. `ShouldInterceptExecWriteForSmc` detects this: once it sees the current EIP's page is being modified, it immediately yields and switches to **single-instruction safe mode** (`max_insts = 1`), ensuring a clear instruction boundary between the write and the jump to new code, preventing races.
 
-**External Alias Tracking.** `MmuCore` maintains an `external_aliases` map internally (key is the host page pointer; value contains `exec_count`, `write_count`, and the set of associated guest pages). When the C# layer maps a host page as `External + Write + Exec` via `mmap`, that page gets registered in this table. This table is only updated on page-table changes (`mmap`/`mprotect`/`munmap`); the hot path never touches it.
+**Multi-engine TLB consistency:** `clone(CLONE_VM)` creates new threads that share the same `MmuCore`, but each `Engine` has its own `SoftTLB`. A `RuntimeTlbShootdownRing` (1024-slot ring buffer) is used for this: the party that changed the page table writes the flushed guest page into the ring, and other Engines consume it the next time they enter `X86_Run`.
 
-**Lazy Arming of ForceWriteSlow.** What actually determines whether an external page needs SMC detection is not whether it has `Exec` permission, but **whether there are cached BasicBlocks on it**. `refresh_smc_armed_for_host_page()` is called in two situations:
-
-1. A new block has been decoded, and we need to check if any of the host pages it covers have writable external mappings;
-2. An external mapping is established or modified (e.g., `mprotect` adds `PROT_WRITE`).
-
-If `(exec_count > 0) && (there is a live block on this host page)`, all guest page entries for this page are tagged with `ForceWriteSlow`. This bit is a **runtime temporary mark**; it is not persisted, not copied by `fork`, and does not appear in deep copies of the page table.
-
-**Write-path Interception Chain.** When the guest executes a write instruction:
-
-```text
-write() -> MicroTLB miss -> SoftTLB miss -> resolve_slow()
-  -> look up page directory -> find ForceWriteSlow in permissions
-  -> call invalidate_code_cache_page(guest_addr)
-  -> mark all BasicBlocks on the associated host page as invalid
-  -> continue with the actual memory write
-```
-
-`invalidate_code_cache_page` does not traverse the entire block cache; by using a `page_to_blocks` reverse index (host page → block list), it achieves O(number of affected blocks) local invalidation. Blocks marked invalid are automatically re-decoded the next time `X86_Run` tries to enter them.
-
-**Execution-time Race: Old Code Currently Running vs. New Code Just Written.** Merely invalidating the block cache when writing is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, `mmu_impl.h` has `ShouldInterceptExecWriteForSmc`:
-
-```cpp
-if (state->intercept_exec_write_for_smc && !state->allow_write_exec_page) {
-    uint32_t current_page = state->ctx.eip >> 12;
-    uint32_t target_page  = addr >> 12;
-    if (target_page == current_page || target_page == current_page + 1)
-        return true;  // trigger SMC yield
-}
-```
-
-Once this condition hits, the write does not execute immediately. Instead, `state->smc_write_to_exec` is set, and the current handler returns a special yield flow. When `X86_Run`'s main loop detects `smc_write_to_exec`, it enters single-instruction safe mode:
-
-- Set `allow_write_exec_page = true`, allowing **exactly one** guest instruction to write to an executable page;
-- Decode and execute only a single-instruction block for the current EIP (`max_insts = 1`);
-- Immediately clear `allow_write_exec_page` after execution, restoring the interception state.
-
-This guarantees a clear instruction boundary between the write operation and the jump to new code, preventing races.
-
-**TLB Consistency Under Multi-Engine Sharing.** When `clone(CLONE_VM)` creates a new thread, multiple `Engine`s share the same `MmuCore`, but each `Engine` has its own `SoftTLB` and `block_lookup_cache`. Engine A's `invalidate_code_cache_page` does not automatically flush Engine B's local TLB. For this, `MmuCore` has a `RuntimeTlbShootdownRing` (1024-slot ring buffer):
-
-- The party that changed the page table writes the flushed guest page into the ring;
-- Other Engines call `sync_runtime_tlb_shootdowns()` the next time they enter `X86_Run`, consuming new entries in the ring and flushing their local TLBs.
-
-This ring's capacity is large enough to cover the vast majority of single `mprotect`/`munmap` page ranges; if it overflows, a full flush is issued directly.
+This mechanism is enough to keep LuaJIT stable, and Node.js / V8 can start up. But occasional crashes happen, probably due to incomplete instruction coverage or missing syscalls.
 
 ---
 
@@ -515,13 +464,7 @@ Since I was already using `preserve_none` + `[[musttail]]` to push interpreter h
 
 The reason: my direct-threaded interpreter had already pushed dispatch overhead incredibly low. The real bottlenecks were memory access, address translation, state maintenance, and I-Cache pressure. By generating stencils, I eliminated some bytecode reading, but the resulting code bloat absolutely wrecked the I-Cache.
 
-It was a humbling lesson: a poorly fitted JIT is just garbage, and loading immediates isn't necessarily faster than reading bytecode if your cache is thrashing.
-
-This forced me to profile more carefully:
-
-- Once a direct-threaded interpreter has pushed dispatch cost low, the bottleneck may no longer be dispatch
-- For this design, memory access and address translation are more expensive than I expected
-- A bad JIT is garbage: I-Cache pressure increases, and loading immediates is not necessarily faster than loading bytecode
+This failure was valuable: I think it shows that **a bad JIT is worse than a good interpreter**. So I kept profiling the memory access path.
 
 ---
 
@@ -558,20 +501,20 @@ flowchart TB
 %%endmermaid
 ```
 
-I implemented `clone`/`fork`/`vfork` and basic `pthread` semantics, but **the concurrency model is not OS-level multi-threaded parallelism**:
+I implemented `clone`/`fork`/`vfork` and basic `pthread` semantics, but in reality:
 
 - `KernelScheduler` is bound to a fixed host thread. All `FiberTask` creation, switching, syscall dispatch, and signal delivery happen sequentially on this thread.
 - Each `FiberTask` owns its own `Engine` instance, so the interpreter core itself **does not need** thread-safety design.
 - `clone(CLONE_VM | CLONE_THREAD)` creates new threads that share the same `MmuCore` (lifetime managed by atomic reference counting).
-- Sharing `MmuCore` introduces a problem: when Engine A modifies the page table or flushes the block cache, Engine B's `SoftTLB` and `block_lookup_cache` are still stale. I implemented a lightweight `RuntimeTlbShootdownRing` for this: the party that changed the page table writes the affected guest page into a ring buffer, and other Engines consume from this ring and flush their local TLBs before their next execution.
+- Sharing `MmuCore` introduces a problem: when Engine A modifies the page table or flushes the block cache, Engine B's `SoftTLB` and `block_lookup_cache` are still stale. A lightweight `RuntimeTlbShootdownRing` handles this: the party that changed the page table writes the affected guest page into a ring buffer, and other Engines consume from this ring and flush their local TLBs before their next execution.
 
-The ceiling of this design is that multiple guest threads are **serialized at the host level** and cannot leverage multi-core parallelism. For shells, Python, and compilation tasks inside the container, this is usually enough; but if the guest runs heavily parallel scientific computing, performance will be noticeably limited.
+The ceiling of this design is that multiple guest threads are **serialized at the host level** and cannot leverage multi-core parallelism. For shells, Python, and small compilation tasks this is fine; but large project builds and parallel computing will be noticeably limited.
 
 ---
 
 ## Linux Compatibility Layer & Usability
 
-Beyond the CPU core, the project also implements a Linux compatibility environment, including:
+The Linux compatibility layer implements:
 
 - Linux-like `fork` / `vfork` / `clone` / `execve` / `wait*` semantics
 - `tmpfs` / `procfs` / host mounts / overlay roots
@@ -580,25 +523,25 @@ Beyond the CPU core, the project also implements a Linux compatibility environme
 - OCI image pull/save/load/import/export
 - Container-style execution via `Podish.Cli`
 
-This layer is what determines whether the project can move from benchmarks to real-world workloads.
+The table below lists some programs I've tested.
 
-| Category                      | Example / Evidence              | Current Status         | Main Limitation                                                                 |
+| Category                      | Example / Evidence              | Current Status         | Notes                                                                           |
 | :---------------------------- | :------------------------------ | :--------------------- | :------------------------------------------------------------------------------ |
 | Shell                         | `/bin/sh -lc true`              | Verified               | Currently covers shell startup and short commands                               |
 | Coreutils / Archive           | `grep -R` / `tar cf` / `tar xf` | Verified               |                                                                                 |
 | Scripting                     | `python` (`primes.py`)          | Verified               | Workload currently has only a few samples; easily affected by phone temperature |
-| JIT-heavy                     | `LuaJIT` (`primes_jit.lua`)     | Verified               | Results were once polluted by a notify-socket / network-path bug, now fixed     |
-| Build-oriented mixed workload | `make compile` on CoreMark tree | Verified               | Current main table uses a compile-only metric                                   |
-| Network / tooling compat      | `git clone`                     | Compatibility verified | High network variance                                                           |
+| JIT-heavy                     | `LuaJIT` (`primes_jit.lua`)     | Verified               |                                                                                 |
+| Build-oriented mixed workload | `make compile` on CoreMark tree | Verified               |                                                                                 |
+| Network / tooling compat      | `git clone`                     | Compatibility verified |                                                                                 |
 
 ---
 
-## Graphics & Audio: Experimental Wayland and PulseAudio Support
+## Experimental Graphics & Audio Support
 
 The codebase already has two experimental multimedia pipelines, but they haven't matured enough for daily testing:
 
-- **`Podish.Wayland`** (~7K lines of C#): Implements a lightweight Wayland compositor core that bridges guest Wayland client protocols to host SDL windows. The graphics path currently only supports sending Wayland surfaces via shmem; it does not support gbm/EGL. `foot` works, but SDL2 does not — apparently SDL2 on Wayland requires EGL.
-- **`Podish.Pulse`** (~6K lines of C#): Implements PulseAudio protocol client/server sides, redirecting guest audio streams to the host audio backend. `ffplay -nodisp` can play music.
+- **`Podish.Wayland`**: A lightweight Wayland compositor that bridges guest Wayland client protocols to host SDL windows. The graphics path currently only supports sending Wayland surfaces via shmem; it does not support gbm/EGL. `foot` works, but SDL2 does not — I looked into it and SDL2 on Wayland seems to strongly depend on EGL.
+- **`Podish.Pulse`**: PulseAudio protocol client/server sides, redirecting guest audio streams to the host audio backend. `ffplay -nodisp` can play music.
 
 ![Wayland Foot Terminal](../../assets/images/podish-wayland-foot.png)
 
@@ -606,44 +549,38 @@ These two features are currently macOS only; iOS / Web adaptations have not been
 
 ---
 
-## Performance Data & Optimization Journey
+## Performance Data & Optimization Journey Record
 
 ### The Journey from 600 to 3000
 
-| Phase      | Key Change                                  | CoreMark | Notes                                                            |
-| :--------- | :------------------------------------------ | -------: | :--------------------------------------------------------------- |
-| Initial    | Baseline interpreter                        |     ~600 | ABI / TLB design was in place, but a TLB bug ruined the hot path |
-| Bugfix     | Fixed address translation                   |     ~800 | Confirmed address translation was the biggest issue              |
-| Hot Path   | PC / block budget / template specialization |    ~1500 | Stopped writing redundant state to memory                        |
-| Memory     | Data layout / paired loads                  |    ~2000 | Shifted focus from dispatch to memory access                     |
-| Lazy Flags | Static pruning + PF lazy                    |    ~2200 | Full lazy flags trial was slower; chose the middle ground        |
-| Linking    | Append simple successor blocks              |    ~2500 | Lowered block boundary costs                                     |
-| Superops   | Profile-guided fused ops                    |    ~3000 | ~256 anchor + RAW superopcodes stabilized at ~3000               |
+| Phase      | Key Change                                  | CoreMark | Notes                                       |
+| :--------- | :------------------------------------------ | -------: | :------------------------------------------ |
+| Initial    | Baseline interpreter                        |     ~400 | TLB bug                                     |
+| Bugfix     | Fixed address translation                   |     ~800 | Fixed the TLB bug                           |
+| Hot Path   | PC / block budget / template specialization |    ~1500 | Stopped updating EIP and other memory vars  |
+| Memory     | Data layout / paired loads                  |    ~2000 | Shifted focus from dispatch to memory access |
+| Lazy Flags | Static pruning + PF lazy                    |    ~2200 | Implemented the current lazy flags scheme   |
+| Linking    | Append simple successor blocks              |    ~2500 | Lowered block boundary costs                |
+| Superops   | Profile-guided fused ops                    |    ~3000 | ~256 superopcodes                           |
 
-Key takeaways:
-
-- As optimization progresses, bottlenecks shift rapidly
-- Text-book solutions don't always fit specific constraints
-- A well-designed interpreter can outperform a poorly fitted baseline JIT
-
-### Full Benchmarks
+### Current Benchmark Data
 
 **Testing environment**:
 
 - Podish / QEMU desktop data: `MacBook Pro (Apple M3 Max, macOS 26.3)`
 - iSH data: `iPhone 17` standard edition (`A19`), `Alpine Linux v3.14.3`
-- Podish / QEMU guest: `docker.io/i386/alpine:latest`
+- Podish / QEMU guest: `docker.io/i386/alpine:3.23`
 - Native host reference: same `MacBook Pro (Apple M3 Max, macOS 26.3)`
 
 **Startup & Compute Intensive**:
 
-| Workload                 | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | QEMU TCI | Native (M3) | Notes                                                                                             |
-| :----------------------- | ----------: | ---------: | --------: | ---------------------: | -------: | ----------: | :------------------------------------------------------------------------------------------------ |
-| `sh -lc true` warm start |       20 ms |      20 ms |     30 ms |                  30 ms |    30 ms |       10 ms | End-to-end startup cost; Podish uses `Podish.Cli run`; QEMU uses explicit `qemu-i386 -L <rootfs>` |
-| CoreMark 1.0             |        3447 |       2967 |      1692 |                  11456 |      325 |       38087 |                                                                                                   |
-| `python primes.py`       |      78.3 s |     89.4 s |   684.4 s |                 40.9 s |  787.3 s |       1.8 s | Scripting benchmark from [kostya/benchmarks](https://github.com/kostya/benchmarks)                |
-| `luajit primes`          |       3.1 s |      4.0 s |    46.6 s |                  1.7 s |   39.3 s |       0.2 s |                                                                                                   |
-| `luajit -joff`           |      14.5 s |     17.3 s |    27.5 s |                  7.1 s |  152.7 s |       0.7 s |                                                                                                   |
+| Workload                 | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | QEMU TCI | Native (M3) | Notes                                                                                |
+| :----------------------- | ----------: | ---------: | --------: | ---------------------: | -------: | ----------: | :----------------------------------------------------------------------------------- |
+| `sh -lc true` warm start |       20 ms |      20 ms |     30 ms |                  30 ms |    30 ms |       10 ms | Startup cost; Podish uses `Podish.Cli run`; QEMU uses explicit `qemu-i386 -L <rootfs>` |
+| CoreMark 1.0             |        3447 |       2967 |      1692 |                  11456 |      325 |       38087 |                                                                                      |
+| `python primes.py`       |      78.3 s |     89.4 s |   684.4 s |                 40.9 s |  787.3 s |       1.8 s | Benchmark from [kostya/benchmarks](https://github.com/kostya/benchmarks)             |
+| `luajit primes`          |       3.1 s |      4.0 s |    46.6 s |                  1.7 s |   39.3 s |       0.2 s |                                                                                      |
+| `luajit -joff`           |      14.5 s |     17.3 s |    27.5 s |                  7.1 s |  152.7 s |       0.7 s |                                                                                      |
 
 **File I/O & Mixed Workloads**:
 
@@ -653,15 +590,11 @@ Key takeaways:
 | `tar cf` CoreMark tree          |       40 ms |      30 ms |     40 ms |                  97 ms |              10 ms | GNU tar                                                              |
 | `tar xf` CoreMark tree          |      250 ms |     250 ms |    170 ms |                 161 ms |              30 ms | GNU tar                                                              |
 | `make compile` on CoreMark tree |     9470 ms |   10460 ms |  11430 ms |                7330 ms |             210 ms | `make compile`; native is single-process `make -j1 compile CC=clang` |
-| `git clone` CoreMark            |     3230 ms |    3300 ms |   5190 ms |                2660 ms |            2980 ms | Compatibility verification only; high network variance               |
+| `git clone` CoreMark            |     3230 ms |    3300 ms |   5190 ms |                2660 ms |            2980 ms | It runs; network makes timing meaningless                            |
 
 Both tables above, except where explicitly noted, are medians of 5 runs. QEMU TCI is omitted from the File I/O table (too slow to be meaningful here).
 
-### Two "Counter-Intuitive" Data Points
-
-**Why is the A19 faster than the M3 Max?**
-
-In this specific project, the interpreter is entirely bound by single-thread IPC and memory latency. It can't leverage the M3 Max's massive multi-core architecture or 300GB/s bandwidth. CoreMark fits easily in the cache, so the A19's slight lead is just a reflection of architectural generation differences in single-core latency.
+### A Strange iSH Phenomenon
 
 **`luajit -joff` is faster than the JIT on iSH**
 
@@ -671,21 +604,17 @@ On iSH, `luajit -joff` running `primes_jit.lua` took 27530 ms, while JIT mode to
 - In `-joff` mode, no machine code is written, SMC traps are avoided, and it runs smoother.
 - Another possibility is extra TLB / page-table walk overhead on iSH's write-protected pages used for SMC detection.
 
-> I haven't deeply studied iSH's internal implementation; the above is speculation. If you're familiar with iSH's source, I'd love to hear the real cause in the comments.
+> I haven't deeply studied iSH's internal implementation; the above is speculation. If you're familiar with iSH's source, I'd love to hear your thoughts in the comments.
 
 ### Comparison with Wasm3
 
 As another pure-interpreter reference, I ran `wasm3 coremark.wasm` five times on the same MacBook:
 
 - 1st run: `Iterations = 60000`, `CoreMark = 3308`
-- Next 4 runs stabilized at `Iterations = 40000`, median ≈ `3229`
+- Next 4 runs: `Iterations = 40000`, median ≈ `3229`
 
 In other words, Podish's pure compute performance is already competitive with Wasm3.
 
----
-
-## Conclusion
-
-Podish proves one thing: on platforms where JIT is forbidden, a carefully designed, profiled, and hardware-aware interpreter can achieve surprising performance. It's not a silver bullet — complex applications like Node.js still have significant bottlenecks, and multi-threading cannot leverage multiple cores — but for command-line tools, scripting runtimes, and lightweight compilation tasks, it is already a usable daily tool.
+--
 
 If you're interested in the project, check out the source on [GitHub](https://github.com/meokit/podish) or try the [Podish Web Demo](https://podish.meokit.com) directly in your browser.
