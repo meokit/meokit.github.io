@@ -1,7 +1,7 @@
 ---
 author: MeoKit
 pubDatetime: 2026-04-25T14:00:00Z
-title: "一个比 iSH 更快的 iOS Linux x86 容器"
+title: "一个为 iOS 优化的 Linux x86 容器"
 slug: podish-details-zh
 featured: true
 draft: false
@@ -15,8 +15,6 @@ description: "深入分析 Podish 的实现原理，这是一个专为 iOS 和 A
 [English Version (英文版)](/posts/podish-details)
 
 ![Podish 图标](../../assets/images/podish-icon.png)
-
-# 一个比 iSH 更快的 iOS Linux x86 容器
 
 > **TL;DR**：`Podish` 是一个面向 iOS / Apple Silicon 专门优化的高性能 Linux x86 用户态容器。它用 C++ 写了一个 i686 解释器核心，用 C# 写了 Linux 兼容层，在 iPhone 17 (A19) 上跑出 CoreMark ~3400，比 iSH 快一倍。
 >

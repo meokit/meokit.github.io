@@ -1,7 +1,7 @@
 ---
 author: MeoKit
 pubDatetime: 2026-04-25T14:00:00Z
-title: "An iOS-optimized Linux x86 container (faster than iSH)"
+title: "An iOS-optimized Linux x86 container"
 slug: podish-details
 featured: true
 draft: false
@@ -16,9 +16,7 @@ description: "A deep dive into Building Podish, a high-performance Linux x86 con
 
 ![Podish Icon](../../assets/images/podish-icon.png)
 
-# An iOS-optimized Linux x86 container (faster than iSH)
-
-> **TL;DR**: `Podish` is a high-performance Linux x86 user-space container optimized specifically for iOS and Apple Silicon. I wrote an i686 interpreter core in C++ and a Linux compatibility layer in C#. On an iPhone 17 (A19), it scores ~3400 on CoreMark, which is about twice as fast as iSH.
+> **TL;DR**: `Podish` is a high-performance Linux x86 user-space container optimized specifically for iOS and Apple Silicon. I wrote an i686 interpreter core in C++ and a Linux compatibility layer in C#. On an iPhone 17 (A19), it scores ~3400 on CoreMark which is about twice as fast as iSH.
 >
 > Web Demo: [https://podish.meokit.com](https://podish.meokit.com)
 >
