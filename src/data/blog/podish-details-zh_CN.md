@@ -2,7 +2,7 @@
 author: MeoKit
 pubDatetime: 2026-04-25T14:00:00Z
 title: "一个比 iSH 更快的 iOS Linux x86 容器"
-slug: podish-technique-report-zh
+slug: podish-details-zh
 featured: true
 draft: false
 tags:
@@ -12,7 +12,7 @@ tags:
 description: "深入分析 Podish 的实现原理，这是一个专为 iOS 和 Apple Silicon 优化的高性能 Linux x86 容器。"
 ---
 
-[English Version (英文版)](/posts/podish-technique-report)
+[English Version (英文版)](/posts/podish-details)
 
 ![Podish 图标](../../assets/images/podish-icon.png)
 

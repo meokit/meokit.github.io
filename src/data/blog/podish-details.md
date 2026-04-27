@@ -2,7 +2,7 @@
 author: MeoKit
 pubDatetime: 2026-04-25T14:00:00Z
 title: "An iOS-optimized Linux x86 container (faster than iSH)"
-slug: podish-technique-report
+slug: podish-details
 featured: true
 draft: false
 tags:
@@ -12,7 +12,7 @@ tags:
 description: "A deep dive into Building Podish, a high-performance Linux x86 container specifically optimized for iOS and Apple Silicon."
 ---
 
-[中文版 (Chinese Version)](/posts/podish-technique-report-zh)
+[中文版 (Chinese Version)](/posts/podish-details-zh)
 
 ![Podish Icon](../../assets/images/podish-icon.png)
 
