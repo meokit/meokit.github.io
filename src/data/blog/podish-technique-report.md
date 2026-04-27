@@ -32,13 +32,13 @@ Podish's goal is simple: run x86 Linux programs as efficiently as possible on **
 
 ### What It Can Run
 
-| Category | Representative Program | Status |
-| :--- | :--- | :--- |
-| Shell / Base Userland | `busybox` / `bash` / `vim` | Stable |
-| Scripting Runtime | `python3` / `LuaJIT` | Verified; stable benchmarks |
-| Build Toolchain | `gcc` / `make` | Verified; `make compile` works |
-| Network / Dev Tools | `git` / `OpenSSH` | Manually verified; `git clone` works |
-| Heavy Runtime | `Node.js` / `Gemini CLI` | Boots; occasional crashes (V8 JIT related) |
+| Category              | Representative Program     | Status                                     |
+| :-------------------- | :------------------------- | :----------------------------------------- |
+| Shell / Base Userland | `busybox` / `bash` / `vim` | Stable                                     |
+| Scripting Runtime     | `python3` / `LuaJIT`       | Verified; stable benchmarks                |
+| Build Toolchain       | `gcc` / `make`             | Verified; `make compile` works             |
+| Network / Dev Tools   | `git` / `OpenSSH`          | Manually verified; `git clone` works       |
+| Heavy Runtime         | `Node.js` / `Gemini CLI`   | Boots; occasional crashes (V8 JIT related) |
 
 ### Screenshots
 
@@ -66,14 +66,14 @@ Podish's goal is simple: run x86 Linux programs as efficiently as possible on **
 
 ### Performance at a Glance
 
-| Workload | Podish (A19) | iSH (A19) | Speedup |
-| :--- | ---: | ---: | ---: |
-| CoreMark 1.0 | **3447** | 1692 | **~2.0×** |
-| `python primes.py` | 78.3 s | 684.4 s | **~8.7×** |
-| `luajit -joff primes` | 14.5 s | 27.5 s | **~1.9×** |
-| `sh -lc true` warm start | 20 ms | 30 ms | **~1.5×** |
+| Workload                 | Podish (A19) | iSH (A19) |   Speedup |
+| :----------------------- | -----------: | --------: | --------: |
+| CoreMark 1.0             |     **3447** |      1692 | **~2.0×** |
+| `python primes.py`       |       78.3 s |   684.4 s | **~8.7×** |
+| `luajit -joff primes`    |       14.5 s |    27.5 s | **~1.9×** |
+| `sh -lc true` warm start |        20 ms |     30 ms | **~1.5×** |
 
-*Full benchmarks and testing environment details are at the end in "[Performance Data & Optimization Journey](#performance-data--optimization-journey)".*
+_Full benchmarks and testing environment details are at the end in "[Performance Data & Optimization Journey](#performance-data--optimization-journey)"._
 
 ---
 
@@ -198,17 +198,17 @@ The result: roughly 10× faster than QEMU TCI. (A big shoutout to Justine Tunney
 
 `DecodedOp` is fixed at **32 bytes**, aligned to a 16-byte boundary:
 
-| Field | Type | Offset | Size | Description |
-| :--- | :--- | ---: | ---: | :--- |
-| `handler` | `HandlerFunc*` (function pointer) | 0 | 8 | Entry point for the instruction's semantics |
-| `next_eip` | `uint32_t` | 8 | 4 | PC of the next instruction |
-| `len` | `uint8_t` | 12 | 1 | Instruction byte length |
-| `modrm` | `uint8_t` | 13 | 1 | ModRM byte |
-| `prefixes` | `Prefixes` (union with bitfields) | 14 | 1 | Prefix info (lock/rep/segment…) |
-| `meta` | `Meta` (union with bitfields) | 15 | 1 | Meta info (has_mem / has_imm / ext_kind…) |
-| `ext.data` | `DecodedMemData` | 16 | 16 | Memory operand description (imm / ea_desc / disp) |
-| `ext.link.next_block` | `BasicBlock*` | 24 | 8 | Cached successor block pointer after block linking |
-| `ext.control` | `DecodedControlFlowData` | 16 | 16 | Control-flow target (target_eip / cached_target) |
+| Field                 | Type                              | Offset | Size | Description                                        |
+| :-------------------- | :-------------------------------- | -----: | ---: | :------------------------------------------------- |
+| `handler`             | `HandlerFunc*` (function pointer) |      0 |    8 | Entry point for the instruction's semantics        |
+| `next_eip`            | `uint32_t`                        |      8 |    4 | PC of the next instruction                         |
+| `len`                 | `uint8_t`                         |     12 |    1 | Instruction byte length                            |
+| `modrm`               | `uint8_t`                         |     13 |    1 | ModRM byte                                         |
+| `prefixes`            | `Prefixes` (union with bitfields) |     14 |    1 | Prefix info (lock/rep/segment…)                    |
+| `meta`                | `Meta` (union with bitfields)     |     15 |    1 | Meta info (has_mem / has_imm / ext_kind…)          |
+| `ext.data`            | `DecodedMemData`                  |     16 |   16 | Memory operand description (imm / ea_desc / disp)  |
+| `ext.link.next_block` | `BasicBlock*`                     |     24 |    8 | Cached successor block pointer after block linking |
+| `ext.control`         | `DecodedControlFlowData`          |     16 |   16 | Control-flow target (target_eip / cached_target)   |
 
 If we take a simple memory ALU instruction as an example:
 
@@ -228,7 +228,7 @@ Predecoded IR:
 
 Implementing x86 `EFLAGS` accurately is tedious. QEMU uses a very elegant [lazy evaluation system](https://qemu.weilnetz.de/w64/2012/2012-12-04/qemu-tech.html) where they store `CC_SRC`, `CC_DST`, and `CC_OP`, only calculating the flags when explicitly requested.
 
-I tried implementing this, and it was *slower* than calculating them eagerly. Why? Because writing those three variables to memory and reading them back was killing me — I was already memory-bound.
+I tried implementing this, and it was _slower_ than calculating them eagerly. Why? Because writing those three variables to memory and reading them back was killing me — I was already memory-bound.
 
 My compromise: **I only evaluate the Parity Flag (PF) lazily.**
 
@@ -287,19 +287,19 @@ flowchart LR
 
 `SoftTLB` is a three-way direct-mapped TLB consisting of three fixed-size tables:
 
-| Field | Type | Offset | Size | Description |
-| :--- | :--- | ---: | ---: | :--- |
-| `read_tlb` | `std::array<TlbEntry, 256>` | 0 | 4096 | Fast read-permission mapping table |
-| `write_tlb` | `std::array<TlbEntry, 256>` | 4096 | 4096 | Fast write-permission mapping table |
-| `exec_tlb` | `std::array<TlbEntry, 256>` | 8192 | 4096 | Fast execute-permission mapping table |
+| Field       | Type                        | Offset | Size | Description                           |
+| :---------- | :-------------------------- | -----: | ---: | :------------------------------------ |
+| `read_tlb`  | `std::array<TlbEntry, 256>` |      0 | 4096 | Fast read-permission mapping table    |
+| `write_tlb` | `std::array<TlbEntry, 256>` |   4096 | 4096 | Fast write-permission mapping table   |
+| `exec_tlb`  | `std::array<TlbEntry, 256>` |   8192 | 4096 | Fast execute-permission mapping table |
 
 `TlbEntry` is aligned to 16 bytes, fixed at **16 bytes**:
 
-| Field | Type | Offset | Size | Description |
-| :--- | :--- | ---: | ---: | :--- |
-| `tag` | `uint32_t` | 0 | 4 | Guest page tag (high 20 bits) |
-| `perm` | `Property` (enum) | 4 | 4 | Permission bits (Read / Write / Exec / Dirty …) |
-| `addend` | `std::uintptr_t` | 8 | 8 | `host_ptr = guest_addr + addend` |
+| Field    | Type              | Offset | Size | Description                                     |
+| :------- | :---------------- | -----: | ---: | :---------------------------------------------- |
+| `tag`    | `uint32_t`        |      0 |    4 | Guest page tag (high 20 bits)                   |
+| `perm`   | `Property` (enum) |      4 |    4 | Permission bits (Read / Write / Exec / Dirty …) |
+| `addend` | `std::uintptr_t`  |      8 |    8 | `host_ptr = guest_addr + addend`                |
 
 Indexing is also very direct:
 
@@ -317,11 +317,11 @@ I introduced a `MicroTLB` — a tiny 16-byte structure kept permanently in a hos
 
 `MicroTLB` is a resident register structure, aligned to 16 bytes, fixed at **16 bytes**:
 
-| Field | Type | Offset | Size | Description |
-| :--- | :--- | ---: | ---: | :--- |
-| `tag_r` | `uint32_t` | 0 | 4 | Read-permission tag, default `0xFFFFFFFF` (miss state) |
-| `tag_w` | `uint32_t` | 4 | 4 | Write-permission tag, default `0xFFFFFFFF` (miss state) |
-| `addend` | `std::uintptr_t` | 8 | 8 | `host_ptr = guest_addr + addend` |
+| Field    | Type             | Offset | Size | Description                                             |
+| :------- | :--------------- | -----: | ---: | :------------------------------------------------------ |
+| `tag_r`  | `uint32_t`       |      0 |    4 | Read-permission tag, default `0xFFFFFFFF` (miss state)  |
+| `tag_w`  | `uint32_t`       |      4 |    4 | Write-permission tag, default `0xFFFFFFFF` (miss state) |
+| `addend` | `std::uintptr_t` |      8 |    8 | `host_ptr = guest_addr + addend`                        |
 
 Note the data layout: `read_tag` + `write_tag` are merged into the same register, so this structure occupies two host registers.
 
@@ -346,22 +346,22 @@ In this interpreter, `BasicBlock` is an object with a fixed-size header followed
 
 `BasicBlock` is aligned to 16 bytes; the header is fixed at **48 bytes**, followed by a variable-length `DecodedOp` array:
 
-| Field | Type | Offset | Size | Description |
-| :--- | :--- | ---: | ---: | :--- |
-| `chain.start_eip` | `uint64_t` (bitfield: 32 bits) | 0 | 4 (embedded in `BasicBlockChainPrefix`) | Block start guest PC |
-| `chain.inst_count` | `uint64_t` (bitfield: 8 bits) | 4 | 1 | Number of instructions in the block |
-| `chain.valid` | `uint64_t` (bitfield: 1 bit) | 5 | 1 bit | Whether the block is valid (for invalidation marking) |
-| `entry` | `HandlerFunc*` | 8 | 8 | Semantic entry point of the first instruction; the interpreter jumps here directly |
-| `end_eip` | `uint32_t` | 16 | 4 | Block end address (next_eip of the last instruction) |
-| `slot_count` | `uint32_t` | 20 | 4 | Total slot count (including trailing sentinel) |
-| `sentinel_slot_index` | `uint32_t` | 24 | 4 | Index of the sentinel in the slots array |
-| `branch_target_eip` | `uint32_t` | 28 | 4 | Branch target address (valid for conditional/direct jumps) |
-| `fallthrough_eip` | `uint32_t` | 32 | 4 | Fallthrough address |
-| `terminal_kind_raw` | `uint8_t` | 36 | 1 | Terminal kind (None / DirectJmpRel / DirectJccRel / Other) |
-| `block_padding0` | `uint8_t` | 37 | 1 | Padding |
-| `block_padding1` | `uint16_t` | 38 | 2 | Padding |
-| `exec_count` | `uint64_t` | 40 | 8 | Number of times the block has been executed (for profile-guided superopcode) |
-| `slots[]` | `DecodedOp[]` | 48 | Variable (32 bytes each) | Pre-decoded instruction stream |
+| Field                 | Type                           | Offset |                                    Size | Description                                                                        |
+| :-------------------- | :----------------------------- | -----: | --------------------------------------: | :--------------------------------------------------------------------------------- |
+| `chain.start_eip`     | `uint64_t` (bitfield: 32 bits) |      0 | 4 (embedded in `BasicBlockChainPrefix`) | Block start guest PC                                                               |
+| `chain.inst_count`    | `uint64_t` (bitfield: 8 bits)  |      4 |                                       1 | Number of instructions in the block                                                |
+| `chain.valid`         | `uint64_t` (bitfield: 1 bit)   |      5 |                                   1 bit | Whether the block is valid (for invalidation marking)                              |
+| `entry`               | `HandlerFunc*`                 |      8 |                                       8 | Semantic entry point of the first instruction; the interpreter jumps here directly |
+| `end_eip`             | `uint32_t`                     |     16 |                                       4 | Block end address (next_eip of the last instruction)                               |
+| `slot_count`          | `uint32_t`                     |     20 |                                       4 | Total slot count (including trailing sentinel)                                     |
+| `sentinel_slot_index` | `uint32_t`                     |     24 |                                       4 | Index of the sentinel in the slots array                                           |
+| `branch_target_eip`   | `uint32_t`                     |     28 |                                       4 | Branch target address (valid for conditional/direct jumps)                         |
+| `fallthrough_eip`     | `uint32_t`                     |     32 |                                       4 | Fallthrough address                                                                |
+| `terminal_kind_raw`   | `uint8_t`                      |     36 |                                       1 | Terminal kind (None / DirectJmpRel / DirectJccRel / Other)                         |
+| `block_padding0`      | `uint8_t`                      |     37 |                                       1 | Padding                                                                            |
+| `block_padding1`      | `uint16_t`                     |     38 |                                       2 | Padding                                                                            |
+| `exec_count`          | `uint64_t`                     |     40 |                                       8 | Number of times the block has been executed (for profile-guided superopcode)       |
+| `slots[]`             | `DecodedOp[]`                  |     48 |                Variable (32 bytes each) | Pre-decoded instruction stream                                                     |
 
 A few fields are especially critical:
 
@@ -424,11 +424,21 @@ block trace
 
 ---
 
+## Memory Management: Page Cache Management, Direct File Mapping on Supported Platforms
+
+At runtime, Podish's memory model is split into two layers: `AddressSpace` / `AnonVma` own the semantic contents of resident pages, while `ProcessPageManager` only mirrors which guest pages are currently installed into the native MMU. `HostPageManager` sits in the middle and keeps one metadata record per live host pointer, so native guest→host mappings can be torn down and rebuilt without losing the underlying page state.
+
+On native platforms, file-backed pages try hard to stay as **direct-mapped Host File Pages**. `MappingBackedInode.AcquireMappingPage(...)` acquires a mapped virtual memory window via OS APIs, `EnsureExternalMapping(...)` then installs that host pointer directly into the guest's SoftMMU, and from there the hot path is just address translation (`guest_addr + addend`) plus permission checks. The relevant classes are in `MappedFilePageCache`, which selects `WindowedMappedFilePageBackend` when the platform supports file mapping: it maps windows aligned to host page size, reuses active windows, and tracks lease tokens so those windows can be released safely when mappings move or references drop.
+
+On Browser/Wasm, that direct-mapping path is disabled (the platform doesn't support it either). `HostMemoryMapGeometry.CreateCurrent()` marks mapped-file backends unsupported, so `FilePageBackendSelector` falls back to `BufferedPageBackend`. In that mode there is no OS-backed file window to map into the MMU; the runtime copies file data into its own internal `PageCache` pages managed by `AddressSpace`, and later faults/installations treat them like ordinary resident host pages. This costs one more copy than native platforms and also loses the ability to do mapped-file flush fast paths, but it keeps the rest of the fault / COW / reclaim pipeline almost unchanged, allowing the same architecture to run smoothly on Wasm.
+
+---
+
 ## SMC (Self-Modifying Code) Handling
 
 SMC (Self-Modifying Code) is standard in modern JIT engines (V8, LuaJIT, .NET JIT): they write machine code to memory and immediately jump to it. The emulator must handle this correctly.
 
-My approach is not "monitor every write operation globally," but rather **reuse the MMU's permission system**, pushing detection costs into permission bits:
+We don't need to "monitor every write operation globally," but rather **reuse the SoftMMU's permission system**, pushing detection costs into permission bits:
 
 ```mermaid
 flowchart TB
@@ -444,17 +454,9 @@ flowchart TB
 %%endmermaid
 ```
 
-When a host memory page is mapped as both **Executable** and **Writable**, the MMU internally marks it as an `External Alias`. If `BasicBlocks` have already been pre-decoded and cached on this page, the MMU tags the write permission for this page with a `ForceWriteSlow` flag. Any subsequent write to this page will miss the fast TLB, hit `ForceWriteSlow`, and be forced into a slow path. The slow path calls `invalidate_code_cache_page(addr)`, invalidating all `BasicBlocks` associated with that page.
-
-**Execution-time race**: Merely invalidating the block cache on write is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, I implemented `ShouldInterceptExecWriteForSmc`: once it detects that the page containing the current EIP is being modified, it immediately yields and switches to a **single-instruction safe mode** (`max_insts = 1`), guaranteeing a clear instruction boundary between the write operation and the jump to new code, preventing races.
-
-**Multi-Engine TLB Consistency**: `clone(CLONE_VM)` creates new threads that share the same `MmuCore`, but each `Engine` has its own `SoftTLB`. For this, I implemented a `RuntimeTlbShootdownRing` (1024-slot ring buffer): the party that changed the page table writes the flushed guest page into the ring, and other Engines consume from this ring and flush their local TLBs before their next execution.
-
-This mechanism allows LuaJIT's `-joff` mode to run stably and even lets Node.js/V8 start up. Occasional crashes remain a known limitation, likely due to subtle bugs in my instruction set implementation or incomplete Linux syscalls.
+When a host memory page becomes both **Executable** and **Writable**, the MMU tracks it as an `External Alias`; once there are live `BasicBlocks` on that page, the corresponding guest-page entries are tagged with `ForceWriteSlow`, so later writes fall out of the fast TLB path, call `invalidate_code_cache_page(addr)`, and invalidate only the affected blocks via `page_to_blocks`. If the current EIP is on the page being modified, `ShouldInterceptExecWriteForSmc` immediately yields into a **single-instruction safe mode** (`max_insts = 1`) so the write and the jump to newly generated code are separated by a hard instruction boundary. Under `clone(CLONE_VM)`, page-table changes are then broadcast to sibling engines through `RuntimeTlbShootdownRing`, because each `Engine` keeps its own `SoftTLB`. This is enough to keep LuaJIT's JIT mode stable and even let Node.js/V8 start up; occasional crashes remain a known limitation, likely due to subtle bugs in instruction coverage or incomplete Linux syscalls.
 
 ### SMC Mechanics in Detail
-
-The overview above covers the high-level idea, but if you're building something similar, the details below are worth reading. The core philosophy is to **push all detection costs into the MMU permission bits**, avoiding global write monitoring or disassembly scans.
 
 **External Alias Tracking.** `MmuCore` maintains an `external_aliases` map internally (key is the host page pointer; value contains `exec_count`, `write_count`, and the set of associated guest pages). When the C# layer maps a host page as `External + Write + Exec` via `mmap`, that page gets registered in this table. This table is only updated on page-table changes (`mmap`/`mprotect`/`munmap`); the hot path never touches it.
 
@@ -475,9 +477,9 @@ write() -> MicroTLB miss -> SoftTLB miss -> resolve_slow()
   -> continue with the actual memory write
 ```
 
-`invalidate_code_cache_page` does not traverse the entire block cache. Instead, it uses a `page_to_blocks` reverse index (host page → block list) to achieve O(number of affected blocks) local invalidation. Blocks marked invalid are automatically re-decoded the next time `X86_Run` tries to enter them.
+`invalidate_code_cache_page` does not traverse the entire block cache; by using a `page_to_blocks` reverse index (host page → block list), it achieves O(number of affected blocks) local invalidation. Blocks marked invalid are automatically re-decoded the next time `X86_Run` tries to enter them.
 
-**Execution-time Race: Old Code Currently Running vs. New Code Just Written.** Merely invalidating the block cache on write is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, `mmu_impl.h` has `ShouldInterceptExecWriteForSmc`:
+**Execution-time Race: Old Code Currently Running vs. New Code Just Written.** Merely invalidating the block cache when writing is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, `mmu_impl.h` has `ShouldInterceptExecWriteForSmc`:
 
 ```cpp
 if (state->intercept_exec_write_for_smc && !state->allow_write_exec_page) {
@@ -580,14 +582,14 @@ Beyond the CPU core, the project also implements a Linux compatibility environme
 
 This layer is what determines whether the project can move from benchmarks to real-world workloads.
 
-| Category | Example / Evidence | Current Status | Main Limitation |
-| :--- | :--- | :--- | :--- |
-| Shell | `/bin/sh -lc true` | Verified | Currently covers shell startup and short commands |
-| Coreutils / Archive | `grep -R` / `tar cf` / `tar xf` | Verified | |
-| Scripting | `python` (`primes.py`) | Verified | Workload currently has only a few samples; easily affected by phone temperature |
-| JIT-heavy | `LuaJIT` (`primes_jit.lua`) | Verified | Results were once polluted by a notify-socket / network-path bug, now fixed |
-| Build-oriented mixed workload | `make compile` on CoreMark tree | Verified | Current main table uses a compile-only metric |
-| Network / tooling compat | `git clone` | Compatibility verified | High network variance |
+| Category                      | Example / Evidence              | Current Status         | Main Limitation                                                                 |
+| :---------------------------- | :------------------------------ | :--------------------- | :------------------------------------------------------------------------------ |
+| Shell                         | `/bin/sh -lc true`              | Verified               | Currently covers shell startup and short commands                               |
+| Coreutils / Archive           | `grep -R` / `tar cf` / `tar xf` | Verified               |                                                                                 |
+| Scripting                     | `python` (`primes.py`)          | Verified               | Workload currently has only a few samples; easily affected by phone temperature |
+| JIT-heavy                     | `LuaJIT` (`primes_jit.lua`)     | Verified               | Results were once polluted by a notify-socket / network-path bug, now fixed     |
+| Build-oriented mixed workload | `make compile` on CoreMark tree | Verified               | Current main table uses a compile-only metric                                   |
+| Network / tooling compat      | `git clone`                     | Compatibility verified | High network variance                                                           |
 
 ---
 
@@ -608,15 +610,15 @@ These two features are currently macOS only; iOS / Web adaptations have not been
 
 ### The Journey from 600 to 3000
 
-| Phase | Key Change | CoreMark | Notes |
-| :--- | :--- | ---: | :--- |
-| Initial | Baseline interpreter | ~600 | ABI / TLB design was in place, but a TLB bug ruined the hot path |
-| Bugfix | Fixed address translation | ~800 | Confirmed address translation was the biggest issue |
-| Hot Path | PC / block budget / template specialization | ~1500 | Stopped writing redundant state to memory |
-| Memory | Data layout / paired loads | ~2000 | Shifted focus from dispatch to memory access |
-| Lazy Flags | Static pruning + PF lazy | ~2200 | Full lazy flags trial was slower; chose the middle ground |
-| Linking | Append simple successor blocks | ~2500 | Lowered block boundary costs |
-| Superops | Profile-guided fused ops | ~3000 | ~256 anchor + RAW superopcodes stabilized at ~3000 |
+| Phase      | Key Change                                  | CoreMark | Notes                                                            |
+| :--------- | :------------------------------------------ | -------: | :--------------------------------------------------------------- |
+| Initial    | Baseline interpreter                        |     ~600 | ABI / TLB design was in place, but a TLB bug ruined the hot path |
+| Bugfix     | Fixed address translation                   |     ~800 | Confirmed address translation was the biggest issue              |
+| Hot Path   | PC / block budget / template specialization |    ~1500 | Stopped writing redundant state to memory                        |
+| Memory     | Data layout / paired loads                  |    ~2000 | Shifted focus from dispatch to memory access                     |
+| Lazy Flags | Static pruning + PF lazy                    |    ~2200 | Full lazy flags trial was slower; chose the middle ground        |
+| Linking    | Append simple successor blocks              |    ~2500 | Lowered block boundary costs                                     |
+| Superops   | Profile-guided fused ops                    |    ~3000 | ~256 anchor + RAW superopcodes stabilized at ~3000               |
 
 Key takeaways:
 
@@ -635,23 +637,23 @@ Key takeaways:
 
 **Startup & Compute Intensive**:
 
-| Workload | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | QEMU TCI | Native (M3) | Notes |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| `sh -lc true` warm start | 20 ms | 20 ms | 30 ms | 30 ms | 30 ms | 10 ms | End-to-end startup cost; Podish uses `Podish.Cli run`; QEMU uses explicit `qemu-i386 -L <rootfs>` |
-| CoreMark 1.0 | 3447 | 2967 | 1692 | 11456 | 325 | 38087 | |
-| `python primes.py` | 78.3 s | 89.4 s | 684.4 s | 40.9 s | 787.3 s | 1.8 s | Scripting benchmark from [kostya/benchmarks](https://github.com/kostya/benchmarks) |
-| `luajit primes` | 3.1 s | 4.0 s | 46.6 s | 1.7 s | 39.3 s | 0.2 s | |
-| `luajit -joff` | 14.5 s | 17.3 s | 27.5 s | 7.1 s | 152.7 s | 0.7 s | |
+| Workload                 | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | QEMU TCI | Native (M3) | Notes                                                                                             |
+| :----------------------- | ----------: | ---------: | --------: | ---------------------: | -------: | ----------: | :------------------------------------------------------------------------------------------------ |
+| `sh -lc true` warm start |       20 ms |      20 ms |     30 ms |                  30 ms |    30 ms |       10 ms | End-to-end startup cost; Podish uses `Podish.Cli run`; QEMU uses explicit `qemu-i386 -L <rootfs>` |
+| CoreMark 1.0             |        3447 |       2967 |      1692 |                  11456 |      325 |       38087 |                                                                                                   |
+| `python primes.py`       |      78.3 s |     89.4 s |   684.4 s |                 40.9 s |  787.3 s |       1.8 s | Scripting benchmark from [kostya/benchmarks](https://github.com/kostya/benchmarks)                |
+| `luajit primes`          |       3.1 s |      4.0 s |    46.6 s |                  1.7 s |   39.3 s |       0.2 s |                                                                                                   |
+| `luajit -joff`           |      14.5 s |     17.3 s |    27.5 s |                  7.1 s |  152.7 s |       0.7 s |                                                                                                   |
 
 **File I/O & Mixed Workloads**:
 
-| Workload | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | Native (M3, arm64) | Notes |
-| :--- | ---: | ---: | ---: | ---: | ---: | :--- |
-| `grep -R` on CoreMark tree | 50 ms | 50 ms | 70 ms | 70 ms | 10 ms | Excluding `.git`, GNU grep |
-| `tar cf` CoreMark tree | 40 ms | 30 ms | 40 ms | 97 ms | 10 ms | GNU tar |
-| `tar xf` CoreMark tree | 250 ms | 250 ms | 170 ms | 161 ms | 30 ms | GNU tar |
-| `make compile` on CoreMark tree | 9470 ms | 10460 ms | 11430 ms | 7330 ms | 210 ms | `make compile`; native is single-process `make -j1 compile CC=clang` |
-| `git clone` CoreMark | 3230 ms | 3300 ms | 5190 ms | 2660 ms | 2980 ms | Compatibility verification only; high network variance |
+| Workload                        | Podish(A19) | Podish(M3) | iSH (A19) | Podman i386 (QEMU JIT) | Native (M3, arm64) | Notes                                                                |
+| :------------------------------ | ----------: | ---------: | --------: | ---------------------: | -----------------: | :------------------------------------------------------------------- |
+| `grep -R` on CoreMark tree      |       50 ms |      50 ms |     70 ms |                  70 ms |              10 ms | Excluding `.git`, GNU grep                                           |
+| `tar cf` CoreMark tree          |       40 ms |      30 ms |     40 ms |                  97 ms |              10 ms | GNU tar                                                              |
+| `tar xf` CoreMark tree          |      250 ms |     250 ms |    170 ms |                 161 ms |              30 ms | GNU tar                                                              |
+| `make compile` on CoreMark tree |     9470 ms |   10460 ms |  11430 ms |                7330 ms |             210 ms | `make compile`; native is single-process `make -j1 compile CC=clang` |
+| `git clone` CoreMark            |     3230 ms |    3300 ms |   5190 ms |                2660 ms |            2980 ms | Compatibility verification only; high network variance               |
 
 Both tables above, except where explicitly noted, are medians of 5 runs. QEMU TCI is omitted from the File I/O table (too slow to be meaningful here).
 
