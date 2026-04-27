@@ -424,6 +424,16 @@ block trace
 
 ---
 
+## Current Memory Management: Direct-Mapped Host Pages and Wasm Page Cache
+
+At runtime, Podish's memory model is deliberately split into two layers: `AddressSpace` / `AnonVma` own the semantic contents of resident pages, while `ProcessPageManager` only mirrors which guest pages are currently installed into the native MMU. `HostPageManager` sits in the middle and keeps one metadata record per live host pointer, so native guest→host mappings can be torn down and rebuilt without losing the underlying page state.
+
+On native platforms, file-backed pages try hard to stay as **direct-mapped Host Pages**. `MappingBackedInode.AcquireMappingPage(...)` can hand out a mapped page or mapped window, `EnsureExternalMapping(...)` then installs that host pointer directly into the MMU, and from there the hot path is just address translation (`guest_addr + addend`) plus permission checks. The current file backend is `MappedFilePageCache`, which selects `WindowedMappedFilePageBackend` when the platform supports file mapping: it maps windows aligned to host allocation granularity, reuses active windows, and tracks lease tokens so those windows can be retired safely when mappings move or references drop.
+
+On Browser/Wasm, that direct-mapping path is intentionally disabled. `HostMemoryMapGeometry.CreateCurrent()` marks mapped-file backends unsupported, so `FilePageBackendSelector` falls back to `BufferedPageBackend`. In that mode there is no OS-backed file window to map into the MMU; the runtime materializes file data into its own internal `PageCache` pages managed by `AddressSpace`, and later faults/installations treat them like ordinary resident host pages. This costs more copying and loses mapped-file flush fast paths, but it keeps the rest of the fault / COW / reclaim pipeline almost unchanged, which is why the same architecture still works on Wasm.
+
+---
+
 ## SMC (Self-Modifying Code) Handling
 
 SMC (Self-Modifying Code) is standard in modern JIT engines (V8, LuaJIT, .NET JIT): they write machine code to memory and immediately jump to it. The emulator must handle this correctly.
@@ -444,17 +454,9 @@ flowchart TB
 %%endmermaid
 ```
 
-When a host memory page is mapped as both **Executable** and **Writable**, the MMU internally marks it as an `External Alias`. If `BasicBlocks` have already been pre-decoded and cached on this page, the MMU tags the write permission for this page with a `ForceWriteSlow` flag. Any subsequent write to this page will miss the fast TLB, hit `ForceWriteSlow`, and be forced into a slow path. The slow path calls `invalidate_code_cache_page(addr)`, invalidating all `BasicBlocks` associated with that page.
-
-**Execution-time race**: Merely invalidating the block cache on write is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, I implemented `ShouldInterceptExecWriteForSmc`: once it detects that the page containing the current EIP is being modified, it immediately yields and switches to a **single-instruction safe mode** (`max_insts = 1`), guaranteeing a clear instruction boundary between the write operation and the jump to new code, preventing races.
-
-**Multi-Engine TLB Consistency**: `clone(CLONE_VM)` creates new threads that share the same `MmuCore`, but each `Engine` has its own `SoftTLB`. For this, I implemented a `RuntimeTlbShootdownRing` (1024-slot ring buffer): the party that changed the page table writes the flushed guest page into the ring, and other Engines consume from this ring and flush their local TLBs before their next execution.
-
-This mechanism allows LuaJIT's `-joff` mode to run stably and even lets Node.js/V8 start up. Occasional crashes remain a known limitation, likely due to subtle bugs in my instruction set implementation or incomplete Linux syscalls.
+When a host memory page becomes both **Executable** and **Writable**, the MMU tracks it as an `External Alias`; once there are live `BasicBlocks` on that page, the corresponding guest-page entries are armed with `ForceWriteSlow`, so later writes fall out of the fast TLB path, call `invalidate_code_cache_page(addr)`, and invalidate only the affected blocks via `page_to_blocks`. If the current EIP is on the page being modified, `ShouldInterceptExecWriteForSmc` immediately yields into a **single-instruction safe mode** (`max_insts = 1`) so the write and the jump to newly generated code are separated by a hard instruction boundary. Under `clone(CLONE_VM)`, page-table changes are then broadcast to sibling engines through `RuntimeTlbShootdownRing`, because each `Engine` keeps its own `SoftTLB`. This is enough to keep LuaJIT's JIT mode stable and even let Node.js/V8 start up; occasional crashes remain a known limitation, likely due to subtle bugs in instruction coverage or incomplete Linux syscalls.
 
 ### SMC Mechanics in Detail
-
-The overview above covers the high-level idea, but if you're building something similar, the details below are worth reading. The core philosophy is to **push all detection costs into the MMU permission bits**, avoiding global write monitoring or disassembly scans.
 
 **External Alias Tracking.** `MmuCore` maintains an `external_aliases` map internally (key is the host page pointer; value contains `exec_count`, `write_count`, and the set of associated guest pages). When the C# layer maps a host page as `External + Write + Exec` via `mmap`, that page gets registered in this table. This table is only updated on page-table changes (`mmap`/`mprotect`/`munmap`); the hot path never touches it.
 

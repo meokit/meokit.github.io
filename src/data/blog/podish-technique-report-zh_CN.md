@@ -429,6 +429,16 @@ block trace
 
 ---
 
+## 当前内存管理机制：直接映射 Host Page 与 Wasm 内部 Page Cache
+
+Podish 运行时的内存模型是刻意拆成两层的：`AddressSpace` / `AnonVma` 负责保存 resident page 的语义内容，`ProcessPageManager` 只负责记录哪些 guest page 目前被安装进原生 MMU；中间的 `HostPageManager` 则按“每个 live host 指针一条元数据”的方式维护状态。因此 guest→host 的原生映射可以随时拆掉再重建，而不会丢失底层页面本身的内容和所有权。
+
+在原生平台上，file-backed page 会尽量走 **直接映射 Host Page** 路径。`MappingBackedInode.AcquireMappingPage(...)` 可以交出一个映射页或映射窗口，随后 `EnsureExternalMapping(...)` 直接把这个 host pointer 安装进 MMU，热路径里剩下的就只是地址转换（`guest_addr + addend`）和权限检查。当前文件后端是 `MappedFilePageCache`：如果平台支持文件映射，它会选择 `WindowedMappedFilePageBackend`，按宿主 allocation granularity 建立映射窗口、复用活跃窗口，并用 lease token 管理窗口生命周期，确保映射移动或引用释放时能安全退役。
+
+到了 Browser/Wasm，这条直接映射路径会被主动关闭。`HostMemoryMapGeometry.CreateCurrent()` 会把 mapped-file backend 标成 unsupported，于是 `FilePageBackendSelector` 自动回退到 `BufferedPageBackend`。这时运行时不再依赖操作系统提供的文件映射窗口，而是把文件内容物化到自己管理的内部 `PageCache` 页面里，后续 fault / install 再把这些页面当作普通 resident host page 来处理。这样做会多一次拷贝，也失去 mapped-file flush 的快路径，但换来的好处是 fault / COW / reclaim 这些后续管线几乎不用改，所以同一套架构仍然能落到 Wasm 平台上。
+
+---
+
 ## SMC（自修改代码）处理
 
 SMC（Self-Modifying Code）是现代 JIT 引擎（V8、LuaJIT、.NET JIT）的标配：它们先写一段机器码到内存，再跳转过去执行。模拟器必须正确处理这种情况。
@@ -449,17 +459,9 @@ flowchart TB
 %%endmermaid
 ```
 
-当某个 host page 同时被映射为**可执行**和**可写**时，MMU 会把它标记为 `External Alias`。如果该页上已缓存了 `BasicBlock`，MMU 会给对应 guest page 表项打上 `ForceWriteSlow`。后续任何对该页的写操作，在 TLB refill 时会命中 `ForceWriteSlow`，走慢路径调用 `invalidate_code_cache_page`，将该页关联的所有 `BasicBlock` 标记为失效。
-
-**执行期竞争**：仅靠"写的时候失效 block cache"还不够。如果当前 EIP 正好落在被写的页上，解释器 tail-call 跳转到的下一条指令可能已经被改写。为此实现了 `ShouldInterceptExecWriteForSmc`：一旦检测到当前 EIP 所在页被修改，会立即 yield 并切换到**单指令安全模式**（`max_insts = 1`），确保“写操作”与“跳转到新代码”之间有一个明确的指令边界，避免竞争。
-
-**多 Engine TLB 一致性**：`clone(CLONE_VM)` 创建的新线程共享同一个 `MmuCore`，但每个 `Engine` 有自己的 `SoftTLB`。为此实现了 `RuntimeTlbShootdownRing`（1024 槽 ring buffer），页表变更方把被 flush 的 guest page 写入 ring，其他 Engine 在下次进入 `X86_Run` 时同步消费。
-
-这套机制让 LuaJIT 可以稳定运行，也让 Node.js / V8 能够启动。目前偶发 crash 是已知限制，可能与指令集实现或 syscall 不完整有关。
+当某个 host page 同时变成**可执行**和**可写**时，MMU 会把它追踪为 `External Alias`；只要这个页上已经有 live `BasicBlock`，对应的 guest page 表项就会被武装上 `ForceWriteSlow`，后续写操作便会从 fast TLB path 掉到慢路径，调用 `invalidate_code_cache_page(addr)`，并借助 `page_to_blocks` 只失效真正受影响的 block。如果当前 EIP 正好落在被改写的页上，`ShouldInterceptExecWriteForSmc` 会立即 yield，切进**单指令安全模式**（`max_insts = 1`），强行在“写入”与“跳到新代码”之间插入一个明确的指令边界。至于 `clone(CLONE_VM)` 下的多 Engine 场景，因为每个 `Engine` 都有自己的 `SoftTLB`，页表变更还会通过 `RuntimeTlbShootdownRing` 广播给其他执行器同步刷新。靠这套机制，LuaJIT 的 JIT 模式已经可以稳定跑起来，Node.js / V8 也能启动；目前偶发 crash 仍是已知限制，大概率与指令覆盖或 Linux syscall 还不完整有关。
 
 ### SMC 机制的细节展开
-
-上面的概述已经说明了思路，但如果你在做类似的设计，下面这段值得一看。核心思想是**将所有检测成本压进 MMU 权限位，避免全局的写监听或反汇编扫描**。
 
 **External Alias 追踪**。`MmuCore` 内部维护了一个 `external_aliases` 映射表（key 是 host page 指针，value 包含 `exec_count`、`write_count` 和关联的 guest page 集合）。当 C# 层通过 `mmap` 把一个 host page 同时映射为 `External + Write + Exec` 时，这个页就会被注册到这张表里。这张表只在页表变更时更新（`mmap`/`mprotect`/`munmap`），热路径里完全不碰。
 
