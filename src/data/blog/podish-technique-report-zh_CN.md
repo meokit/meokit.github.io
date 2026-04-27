@@ -429,13 +429,13 @@ block trace
 
 ---
 
-## 当前内存管理机制：直接映射 Host Page 与 Wasm 内部 Page Cache
+## 内存管理机制: Page Cache管理，在支持的平台直接映射文件
 
-Podish 运行时的内存模型是刻意拆成两层的：`AddressSpace` / `AnonVma` 负责保存 resident page 的语义内容，`ProcessPageManager` 只负责记录哪些 guest page 目前被安装进原生 MMU；中间的 `HostPageManager` 则按“每个 live host 指针一条元数据”的方式维护状态。因此 guest→host 的原生映射可以随时拆掉再重建，而不会丢失底层页面本身的内容和所有权。
+Podish 运行时的内存模型被拆成两层：`AddressSpace` / `AnonVma` 负责保存 resident page 的语义内容，`ProcessPageManager` 只负责记录哪些 guest page 目前被安装进原生 MMU；中间的 `HostPageManager` 则按“每个 live host 指针一条元数据”的方式维护状态。因此 guest→host 的原生映射可以随时拆掉再重建，而不会丢失底层页面本身的内容和所有权。
 
-在原生平台上，file-backed page 会尽量走 **直接映射 Host Page** 路径。`MappingBackedInode.AcquireMappingPage(...)` 可以交出一个映射页或映射窗口，随后 `EnsureExternalMapping(...)` 直接把这个 host pointer 安装进 MMU，热路径里剩下的就只是地址转换（`guest_addr + addend`）和权限检查。当前文件后端是 `MappedFilePageCache`：如果平台支持文件映射，它会选择 `WindowedMappedFilePageBackend`，按宿主 allocation granularity 建立映射窗口、复用活跃窗口，并用 lease token 管理窗口生命周期，确保映射移动或引用释放时能安全退役。
+在原生平台上，file-backed page 会尽量走 **直接映射 Host File Page** 路径。`MappingBackedInode.AcquireMappingPage(...)` 通过操作系统API获取一个映射的虚拟内存窗口，随后 `EnsureExternalMapping(...)` 直接把这个 host pointer 安装进 guest 的 SoftMMU，热路径只做地址转换（`guest_addr + addend`）和权限检查。相关类在 `MappedFilePageCache`：如果平台支持文件映射，它会选择 `WindowedMappedFilePageBackend`，按宿主的页面大小建立映射窗口、复用活跃窗口，并用 lease token 管理窗口生命周期，确保映射移动或引用释放时能安全释放资源。
 
-到了 Browser/Wasm，这条直接映射路径会被主动关闭。`HostMemoryMapGeometry.CreateCurrent()` 会把 mapped-file backend 标成 unsupported，于是 `FilePageBackendSelector` 自动回退到 `BufferedPageBackend`。这时运行时不再依赖操作系统提供的文件映射窗口，而是把文件内容物化到自己管理的内部 `PageCache` 页面里，后续 fault / install 再把这些页面当作普通 resident host page 来处理。这样做会多一次拷贝，也失去 mapped-file flush 的快路径，但换来的好处是 fault / COW / reclaim 这些后续管线几乎不用改，所以同一套架构仍然能落到 Wasm 平台上。
+到了 Browser/Wasm，这条直接映射路径会被关闭（平台也不支持）。`HostMemoryMapGeometry.CreateCurrent()` 会把 mapped-file backend 标成 unsupported，于是 `FilePageBackendSelector` 自动回退到 `BufferedPageBackend`。这时运行时不再依赖操作系统提供的文件映射窗口，而是把文件内容拷贝到自己管理的内部 `PageCache` 页面里，后续 fault / install 再把这些页面当作普通 resident host page 来处理。这样做比原生平台多一次拷贝，也无法做 mapped-file flush 的快路径，不过 fault / COW / reclaim 这些后续管线几乎不用改，同一套架构在 Wasm 平台上能够轻松跑起来。
 
 ---
 
@@ -443,7 +443,7 @@ Podish 运行时的内存模型是刻意拆成两层的：`AddressSpace` / `Anon
 
 SMC（Self-Modifying Code）是现代 JIT 引擎（V8、LuaJIT、.NET JIT）的标配：它们先写一段机器码到内存，再跳转过去执行。模拟器必须正确处理这种情况。
 
-我的思路并非"监听整个地址空间的写操作"，而是**复用 MMU 的权限系统**，将检测成本压进权限位：
+我们不需要"监听整个地址空间的写入操作"，而是**复用 SoftMMU 的权限系统**，将检测成本压进权限位：
 
 ```mermaid
 flowchart TB
@@ -459,7 +459,7 @@ flowchart TB
 %%endmermaid
 ```
 
-当某个 host page 同时变成**可执行**和**可写**时，MMU 会把它追踪为 `External Alias`；只要这个页上已经有 live `BasicBlock`，对应的 guest page 表项就会被武装上 `ForceWriteSlow`，后续写操作便会从 fast TLB path 掉到慢路径，调用 `invalidate_code_cache_page(addr)`，并借助 `page_to_blocks` 只失效真正受影响的 block。如果当前 EIP 正好落在被改写的页上，`ShouldInterceptExecWriteForSmc` 会立即 yield，切进**单指令安全模式**（`max_insts = 1`），强行在“写入”与“跳到新代码”之间插入一个明确的指令边界。至于 `clone(CLONE_VM)` 下的多 Engine 场景，因为每个 `Engine` 都有自己的 `SoftTLB`，页表变更还会通过 `RuntimeTlbShootdownRing` 广播给其他执行器同步刷新。靠这套机制，LuaJIT 的 JIT 模式已经可以稳定跑起来，Node.js / V8 也能启动；目前偶发 crash 仍是已知限制，大概率与指令覆盖或 Linux syscall 还不完整有关。
+当某个 host page 同时变成**可执行**和**可写**时，MMU 会把它追踪为 `External Alias`；只要这个页上已经有 live `BasicBlock`，对应的 guest page 表项就会被打上 `ForceWriteSlow` 标记，后续写操作便会从 fast TLB path 掉到慢路径，调用 `invalidate_code_cache_page(addr)`，并借助 `page_to_blocks` 只失效真正受影响的 block。如果当前 EIP 正好落在被改写的页上，`ShouldInterceptExecWriteForSmc` 会立即 yield，切进**单指令安全模式**（`max_insts = 1`），强行在“写入”与“跳到新代码”之间插入一个明确的指令边界。至于 `clone(CLONE_VM)` 下的多 Engine 场景，因为每个 `Engine` 都有自己的 `SoftTLB`，页表变更还会通过 `RuntimeTlbShootdownRing` 广播给其他执行器同步刷新。靠这套机制，LuaJIT 的 JIT 模式已经可以稳定跑起来，Node.js / V8 也能启动；目前偶发 crash 仍是已知限制，大概率与指令覆盖或 Linux syscall 还不完整有关。
 
 ### SMC 机制的细节展开
 
@@ -482,9 +482,9 @@ write() -> MicroTLB miss -> SoftTLB miss -> resolve_slow()
   -> 继续完成实际内存写
 ```
 
-`invalidate_code_cache_page` 并非遍历整个 block cache，而是利用 `page_to_blocks` 反向索引表（host page → block list）做到 O(受影响 block 数) 的局部失效。被标记为 invalid 的 block 会在下次 `X86_Run` 尝试进入时自动重新解码。
+`invalidate_code_cache_page` 不会遍历整个 block cache，通过利用 `page_to_blocks` 反向索引表（host page → block list）做到 O(受影响 block 数) 的局部失效。被标记为 invalid 的 block 会在下次 `X86_Run` 尝试进入时自动重新解码。
 
-**执行期竞争：正在跑的旧代码 vs 刚写的新代码**。仅靠“写的时候失效 block cache”还不够——如果当前 EIP 正好落在被写的页上，解释器 tail-call 跳转到的下一条指令可能已经被改写。为此 `mmu_impl.h` 里有 `ShouldInterceptExecWriteForSmc`：
+**执行期竞争：正在跑的旧代码 vs 刚写的新代码**。仅靠写的时候失效 block cache还不行——如果当前 EIP 正好落在被写的页上，解释器 tail-call 跳转到的下一条指令可能已经被改写。为此 `mmu_impl.h` 里有 `ShouldInterceptExecWriteForSmc`：
 
 ```cpp
 if (state->intercept_exec_write_for_smc && !state->allow_write_exec_page) {
@@ -497,7 +497,7 @@ if (state->intercept_exec_write_for_smc && !state->allow_write_exec_page) {
 
 一旦命中这个条件，写操作不会立即执行，而是把 `state->smc_write_to_exec` 置位，同时让当前 handler 返回一个特殊的 yield flow。`X86_Run` 的主循环检测到 `smc_write_to_exec` 后，会进入单指令安全模式：
 
-- 把 `allow_write_exec_page = true`，允许**恰好一条** guest 指令写入可执行页；
+- 把 `allow_write_exec_page = true`，允许**仅一条** guest 指令写入可执行页；
 - 对当前 EIP 只解码并执行一个单指令 block（`max_insts = 1`）；
 - 执行完后立即清除 `allow_write_exec_page`，恢复拦截态。
 

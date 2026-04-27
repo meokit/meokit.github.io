@@ -424,13 +424,13 @@ block trace
 
 ---
 
-## Current Memory Management: Direct-Mapped Host Pages and Wasm Page Cache
+## Memory Management: Page Cache Management, Direct File Mapping on Supported Platforms
 
-At runtime, Podish's memory model is deliberately split into two layers: `AddressSpace` / `AnonVma` own the semantic contents of resident pages, while `ProcessPageManager` only mirrors which guest pages are currently installed into the native MMU. `HostPageManager` sits in the middle and keeps one metadata record per live host pointer, so native guest→host mappings can be torn down and rebuilt without losing the underlying page state.
+At runtime, Podish's memory model is split into two layers: `AddressSpace` / `AnonVma` own the semantic contents of resident pages, while `ProcessPageManager` only mirrors which guest pages are currently installed into the native MMU. `HostPageManager` sits in the middle and keeps one metadata record per live host pointer, so native guest→host mappings can be torn down and rebuilt without losing the underlying page state.
 
-On native platforms, file-backed pages try hard to stay as **direct-mapped Host Pages**. `MappingBackedInode.AcquireMappingPage(...)` can hand out a mapped page or mapped window, `EnsureExternalMapping(...)` then installs that host pointer directly into the MMU, and from there the hot path is just address translation (`guest_addr + addend`) plus permission checks. The current file backend is `MappedFilePageCache`, which selects `WindowedMappedFilePageBackend` when the platform supports file mapping: it maps windows aligned to host allocation granularity, reuses active windows, and tracks lease tokens so those windows can be retired safely when mappings move or references drop.
+On native platforms, file-backed pages try hard to stay as **direct-mapped Host File Pages**. `MappingBackedInode.AcquireMappingPage(...)` acquires a mapped virtual memory window via OS APIs, `EnsureExternalMapping(...)` then installs that host pointer directly into the guest's SoftMMU, and from there the hot path is just address translation (`guest_addr + addend`) plus permission checks. The relevant classes are in `MappedFilePageCache`, which selects `WindowedMappedFilePageBackend` when the platform supports file mapping: it maps windows aligned to host page size, reuses active windows, and tracks lease tokens so those windows can be released safely when mappings move or references drop.
 
-On Browser/Wasm, that direct-mapping path is intentionally disabled. `HostMemoryMapGeometry.CreateCurrent()` marks mapped-file backends unsupported, so `FilePageBackendSelector` falls back to `BufferedPageBackend`. In that mode there is no OS-backed file window to map into the MMU; the runtime materializes file data into its own internal `PageCache` pages managed by `AddressSpace`, and later faults/installations treat them like ordinary resident host pages. This costs more copying and loses mapped-file flush fast paths, but it keeps the rest of the fault / COW / reclaim pipeline almost unchanged, which is why the same architecture still works on Wasm.
+On Browser/Wasm, that direct-mapping path is disabled (the platform doesn't support it either). `HostMemoryMapGeometry.CreateCurrent()` marks mapped-file backends unsupported, so `FilePageBackendSelector` falls back to `BufferedPageBackend`. In that mode there is no OS-backed file window to map into the MMU; the runtime copies file data into its own internal `PageCache` pages managed by `AddressSpace`, and later faults/installations treat them like ordinary resident host pages. This costs one more copy than native platforms and also loses the ability to do mapped-file flush fast paths, but it keeps the rest of the fault / COW / reclaim pipeline almost unchanged, allowing the same architecture to run smoothly on Wasm.
 
 ---
 
@@ -438,7 +438,7 @@ On Browser/Wasm, that direct-mapping path is intentionally disabled. `HostMemory
 
 SMC (Self-Modifying Code) is standard in modern JIT engines (V8, LuaJIT, .NET JIT): they write machine code to memory and immediately jump to it. The emulator must handle this correctly.
 
-My approach is not "monitor every write operation globally," but rather **reuse the MMU's permission system**, pushing detection costs into permission bits:
+We don't need to "monitor every write operation globally," but rather **reuse the SoftMMU's permission system**, pushing detection costs into permission bits:
 
 ```mermaid
 flowchart TB
@@ -454,7 +454,7 @@ flowchart TB
 %%endmermaid
 ```
 
-When a host memory page becomes both **Executable** and **Writable**, the MMU tracks it as an `External Alias`; once there are live `BasicBlocks` on that page, the corresponding guest-page entries are armed with `ForceWriteSlow`, so later writes fall out of the fast TLB path, call `invalidate_code_cache_page(addr)`, and invalidate only the affected blocks via `page_to_blocks`. If the current EIP is on the page being modified, `ShouldInterceptExecWriteForSmc` immediately yields into a **single-instruction safe mode** (`max_insts = 1`) so the write and the jump to newly generated code are separated by a hard instruction boundary. Under `clone(CLONE_VM)`, page-table changes are then broadcast to sibling engines through `RuntimeTlbShootdownRing`, because each `Engine` keeps its own `SoftTLB`. This is enough to keep LuaJIT's JIT mode stable and even let Node.js/V8 start up; occasional crashes remain a known limitation, likely due to subtle bugs in instruction coverage or incomplete Linux syscalls.
+When a host memory page becomes both **Executable** and **Writable**, the MMU tracks it as an `External Alias`; once there are live `BasicBlocks` on that page, the corresponding guest-page entries are tagged with `ForceWriteSlow`, so later writes fall out of the fast TLB path, call `invalidate_code_cache_page(addr)`, and invalidate only the affected blocks via `page_to_blocks`. If the current EIP is on the page being modified, `ShouldInterceptExecWriteForSmc` immediately yields into a **single-instruction safe mode** (`max_insts = 1`) so the write and the jump to newly generated code are separated by a hard instruction boundary. Under `clone(CLONE_VM)`, page-table changes are then broadcast to sibling engines through `RuntimeTlbShootdownRing`, because each `Engine` keeps its own `SoftTLB`. This is enough to keep LuaJIT's JIT mode stable and even let Node.js/V8 start up; occasional crashes remain a known limitation, likely due to subtle bugs in instruction coverage or incomplete Linux syscalls.
 
 ### SMC Mechanics in Detail
 
@@ -477,9 +477,9 @@ write() -> MicroTLB miss -> SoftTLB miss -> resolve_slow()
   -> continue with the actual memory write
 ```
 
-`invalidate_code_cache_page` does not traverse the entire block cache. Instead, it uses a `page_to_blocks` reverse index (host page → block list) to achieve O(number of affected blocks) local invalidation. Blocks marked invalid are automatically re-decoded the next time `X86_Run` tries to enter them.
+`invalidate_code_cache_page` does not traverse the entire block cache; by using a `page_to_blocks` reverse index (host page → block list), it achieves O(number of affected blocks) local invalidation. Blocks marked invalid are automatically re-decoded the next time `X86_Run` tries to enter them.
 
-**Execution-time Race: Old Code Currently Running vs. New Code Just Written.** Merely invalidating the block cache on write is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, `mmu_impl.h` has `ShouldInterceptExecWriteForSmc`:
+**Execution-time Race: Old Code Currently Running vs. New Code Just Written.** Merely invalidating the block cache when writing is not enough — if the current EIP happens to fall on the page being written, the tail-call jump to the next instruction may already have been overwritten. For this, `mmu_impl.h` has `ShouldInterceptExecWriteForSmc`:
 
 ```cpp
 if (state->intercept_exec_write_for_smc && !state->allow_write_exec_page) {
